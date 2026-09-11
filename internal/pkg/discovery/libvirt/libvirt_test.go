@@ -68,4 +68,42 @@ func TestParseAndSelectIP(t *testing.T) {
 			t.Errorf("expected %s under auto, got %s", expected, gotAuto)
 		}
 	})
+
+	t.Run("ignores loopback lo interface and picks valid ip", func(t *testing.T) {
+		agentOutputWithLo := `
+ Name       MAC address          Protocol     Address
+-------------------------------------------------------------------------------
+ lo         00:00:00:00:00:00    ipv4         127.0.0.1/8
+ -          -                    ipv6         ::1/128
+ eth0       52:54:00:aa:bb:cc    ipv4         10.0.10.5/24
+ -          -                    ipv6         2001:db8::55/64
+`
+		gotV4 := parseAndSelectIP([]byte(agentOutputWithLo), "ipv4")
+		if gotV4 != "10.0.10.5" {
+			t.Errorf("expected 10.0.10.5, got %s", gotV4)
+		}
+
+		gotV6 := parseAndSelectIP([]byte(agentOutputWithLo), "ipv6")
+		if gotV6 != "2001:db8::55" {
+			t.Errorf("expected 2001:db8::55, got %s", gotV6)
+		}
+
+		gotAuto := parseAndSelectIP([]byte(agentOutputWithLo), "auto")
+		if gotAuto != "10.0.10.5" {
+			t.Errorf("expected 10.0.10.5 under auto, got %s", gotAuto)
+		}
+	})
+
+	t.Run("returns empty when only loopback present", func(t *testing.T) {
+		loOnlyOutput := `
+ Name       MAC address          Protocol     Address
+-------------------------------------------------------------------------------
+ lo         00:00:00:00:00:00    ipv4         127.0.0.1/8
+ -          -                    ipv6         ::1/128
+`
+		got := parseAndSelectIP([]byte(loOnlyOutput), "auto")
+		if got != "" {
+			t.Errorf("expected empty string when only lo present, got %s", got)
+		}
+	})
 }

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -191,12 +192,31 @@ type ipEntry struct {
 	addr  string
 }
 
+func isIgnoredAddress(iface, addr string) bool {
+	// Exclude loopback interfaces
+	if iface == "lo" || strings.HasPrefix(iface, "lo:") || strings.EqualFold(iface, "loopback") {
+		return true
+	}
+
+	// Exclude loopback or unspecified IP addresses
+	ip := net.ParseIP(addr)
+	if ip != nil && (ip.IsLoopback() || ip.IsUnspecified()) {
+		return true
+	}
+	if strings.HasPrefix(addr, "127.") || addr == "::1" || addr == "0.0.0.0" || addr == "::" {
+		return true
+	}
+
+	return false
+}
+
 func parseAndSelectIP(out []byte, ipVersion string) string {
 	if ipVersion == "" {
 		ipVersion = "ipv4"
 	}
 
 	var entries []ipEntry
+	currentIface := ""
 	lines := strings.Split(string(out), "\n")
 	for _, l := range lines {
 		l = strings.TrimSpace(l)
@@ -204,13 +224,35 @@ func parseAndSelectIP(out []byte, ipVersion string) string {
 			continue
 		}
 		fields := strings.Fields(l)
-		if len(fields) >= 4 {
-			iface := fields[0]
-			proto := strings.ToLower(fields[2])
-			addrWithMask := fields[3]
-			addr := strings.Split(addrWithMask, "/")[0]
-			entries = append(entries, ipEntry{iface: iface, proto: proto, addr: addr})
+		if len(fields) == 0 {
+			continue
 		}
+
+		if fields[0] != "-" {
+			currentIface = fields[0]
+		}
+		iface := currentIface
+
+		var proto, addrWithMask string
+		for i, f := range fields {
+			lower := strings.ToLower(f)
+			if (lower == "ipv4" || lower == "ipv6") && i+1 < len(fields) {
+				proto = lower
+				addrWithMask = fields[i+1]
+				break
+			}
+		}
+
+		if proto == "" || addrWithMask == "" {
+			continue
+		}
+
+		addr := strings.Split(addrWithMask, "/")[0]
+		if isIgnoredAddress(iface, addr) {
+			continue
+		}
+
+		entries = append(entries, ipEntry{iface: iface, proto: proto, addr: addr})
 	}
 
 	findIPv4 := func() string {
