@@ -96,7 +96,21 @@ Supports all DCGM remote connection formats:
   - `"ipv6"`: Discovers IPv6 addresses (prefers global unicast, falls back to scoped LLA).
   - `"auto"`: Prioritizes IPv4, falling back to global IPv6 and scoped LLA IPv6.
 
-### 4. Prometheus Scrape Methods
+### 4. Multi-Tenant Network Namespace (`netns`) Isolation
+In cloud and virtualized environments (such as OpenStack Neutron, Kubernetes CNI, or KVM with tenant overlay networks), virtual machines belonging to different tenants often reside in isolated Linux network namespaces (e.g., `qrouter-<router-uuid>`, `tenant-<id>`, or custom namespace paths):
+- **Per-Tenant Network Isolation**: Child `dcgm-exporter` instances for VMs of the same tenant are spawned inside the **same tenant network namespace**, while different tenants remain strictly isolated from one another.
+- **Zero Port Allocation & Overlapping IPs**: Even if multiple tenants use the exact same private IP space (e.g., `10.0.0.5:5555`), child exporters communicate back to the supervisor via host filesystem UNIX domain sockets (`/run/dcgm-exporter-supervisor/<id>.sock`), entirely avoiding port collisions or port exhaustion.
+- **Unified Resolution Across All Discovery Modes**:
+  1. **Explicit Target Override**: `Target.NetNS` if set directly in static YAML or file target.
+  2. **Tenant Match**: Discovered tenant identity (Nova `tenant_id`, Libvirt OpenStack metadata, or target `tenant:`) matched against `netns.items[].tenants`.
+  3. **Dynamic Template**: `netns.template: "qrouter-{{.Tenant}}"`.
+  4. **Subnet / CIDR Match**: Target endpoint IP tested against `netns.items[].subnets` (IPv4 & IPv6).
+  5. **Auto-Detect Route**: Optional `netns.auto_detect_route: true` probes routing reachability via `ip route get <ip>`.
+  6. **Fallback Default**: `netns.default_netns` or root namespace.
+- **Metric Label Enrichment**: Injects `tenant="<name_or_uuid>"` and `netns="<namespace>"` labels into Prometheus metrics and `/targets`.
+- **System Capabilities**: Running exporters inside another network namespace requires `CAP_NET_ADMIN` and `CAP_SYS_ADMIN` (or running as `root`).
+
+### 5. Prometheus Scrape Methods
 
 #### Method A: Unified Scrape (`GET /metrics`)
 Prometheus scrapes a single endpoint on the supervisor. The supervisor fans out requests across all running instances concurrently, rewrites each metric line to inject `vm_name="<name>"`, `target_id="<id>"`, and custom labels, and streams the merged output.
@@ -207,6 +221,8 @@ discovery:
 | `--log-format` | `DCGM_SUPERVISOR_LOG_FORMAT` | `"text"` | Log format (`text` or `json`) |
 | `--debug` | `DCGM_SUPERVISOR_DEBUG` | `false` | Enable verbose debug logging |
 | `--shutdown-timeout` | `DCGM_SUPERVISOR_SHUTDOWN_TIMEOUT` | `5s` | Timeout before SIGKILL is sent |
+| `--netns-default` | `DCGM_SUPERVISOR_NETNS_DEFAULT` | `""` | Default fallback network namespace |
+| `--netns-template` | `DCGM_SUPERVISOR_NETNS_TEMPLATE` | `""` | Dynamic template for tenant network namespace (e.g. `"qrouter-{{.Tenant}}"`) |
 
 ---
 

@@ -49,6 +49,8 @@ type Target struct {
 	ID         string            `yaml:"id" json:"id"`
 	Name       string            `yaml:"name" json:"name"`
 	Endpoint   string            `yaml:"endpoint" json:"endpoint"` // e.g. tcp://192.168.1.10:5555, vsock://3:5555, unix:///path.sock
+	Tenant     string            `yaml:"tenant,omitempty" json:"tenant,omitempty"`
+	NetNS      string            `yaml:"netns,omitempty" json:"netns,omitempty"`
 	Labels     map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
 	CustomArgs []string          `yaml:"custom_args,omitempty" json:"custom_args,omitempty"`
 }
@@ -68,6 +70,7 @@ type LibvirtConfig struct {
 	IPVersion      string        `yaml:"ip_version"`      // "ipv4", "ipv6", "auto" (default: "ipv4")
 	DefaultPort    int           `yaml:"default_port"`    // default 5555
 	FilterGPUOnly  bool          `yaml:"filter_gpu_only"` // only discover VMs with GPU passthrough / vGPU
+	DefaultNetNS   string        `yaml:"default_netns,omitempty"`
 }
 
 // NovaConfig defines settings for OpenStack Nova API discovery.
@@ -86,6 +89,7 @@ type NovaConfig struct {
 	DefaultPort        int           `yaml:"default_port"`
 	ConnectionMode     string        `yaml:"connection_mode"` // "ip", "vsock"
 	FilterGPUOnly      bool          `yaml:"filter_gpu_only"`
+	DefaultNetNS       string        `yaml:"default_netns,omitempty"`
 }
 
 // FileConfig defines settings for file-based target discovery (directory watcher).
@@ -101,6 +105,22 @@ type DiscoveryConfig struct {
 	Libvirt LibvirtConfig `yaml:"libvirt"`
 	Nova    NovaConfig    `yaml:"nova"`
 	File    FileConfig    `yaml:"file"`
+}
+
+// NetNSItemConfig configures a specific network namespace and its tenant/subnet associations.
+type NetNSItemConfig struct {
+	Name    string   `yaml:"name" json:"name"`
+	Tenants []string `yaml:"tenants,omitempty" json:"tenants,omitempty"`
+	Subnets []string `yaml:"subnets,omitempty" json:"subnets,omitempty"`
+}
+
+// NetNSConfig configures multi-tenant network namespace isolation.
+type NetNSConfig struct {
+	Enabled         bool              `yaml:"enabled" json:"enabled"`
+	Template        string            `yaml:"template,omitempty" json:"template,omitempty"`
+	DefaultNetNS    string            `yaml:"default_netns,omitempty" json:"default_netns,omitempty"`
+	AutoDetectRoute bool              `yaml:"auto_detect_route,omitempty" json:"auto_detect_route,omitempty"`
+	Items           []NetNSItemConfig `yaml:"items,omitempty" json:"items,omitempty"`
 }
 
 // ExporterConfig configures child dcgm-exporter processes.
@@ -132,6 +152,7 @@ type Config struct {
 	WebWriteTimeout time.Duration   `yaml:"web_write_timeout"`
 	Exporter        ExporterConfig  `yaml:"exporter"`
 	Discovery       DiscoveryConfig `yaml:"discovery"`
+	NetNS           NetNSConfig     `yaml:"netns,omitempty"`
 }
 
 // NewDefaultConfig returns a Config initialized with sensible default values.

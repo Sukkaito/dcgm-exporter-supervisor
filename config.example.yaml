@@ -45,6 +45,44 @@ exporter:
     - "--replace-blanks-in-model-name"
 
 # ------------------------------------------------------------------------------
+# Multi-Tenant Network Namespace (netns) Isolation Configuration
+# ------------------------------------------------------------------------------
+netns:
+  # Enable running child dcgm-exporter instances inside specific network namespaces.
+  # When enabled, exporters for VMs of the same tenant run inside the tenant's netns,
+  # providing complete network isolation across tenants.
+  # Child exporters communicate back to the supervisor via UNIX domain sockets (zero port allocation).
+  enabled: false
+
+  # Optional dynamic template for tenant namespace naming (e.g. OpenStack Neutron routers)
+  # Supported variables: {{.Tenant}} or {{.TenantID}}
+  # template: "qrouter-{{.Tenant}}"
+
+  # Fallback network namespace if no explicit tenant or subnet match is found.
+  # default_netns: "management-netns"
+
+  # Optional: auto-detect reachability via 'ip netns exec <ns> ip route get <ip>'
+  # auto_detect_route: false
+
+  # List of network namespaces available on this hypervisor host
+  items:
+    - name: "qrouter-9a8b7c6d-5555" # Namespace name (or path /var/run/netns/...)
+      tenants:
+        - "tenant-alpha"
+        - "9a8b7c6d-5555-4444-3333-222211110000" # OpenStack project UUID
+      subnets:
+        - "10.10.1.0/24"
+        - "fd00:10:1::/64"
+
+    - name: "qrouter-1234abcd-6666"
+      tenants:
+        - "tenant-beta"
+        - "1234abcd-6666-4444-3333-222211110000"
+      subnets:
+        - "10.10.2.0/24"
+        - "fd00:10:2::/64"
+
+# ------------------------------------------------------------------------------
 # Discovery Providers Configuration
 # ------------------------------------------------------------------------------
 discovery:
@@ -54,6 +92,7 @@ discovery:
     targets:
       - name: "vm-ai-01"
         endpoint: "vsock://3:5555" # Or tcp://192.168.122.10:5555
+        tenant: "tenant-alpha"      # Automatically routes to qrouter-9a8b7c6d-5555
         labels:
           vm_name: "vm-ai-01"
           cluster: "training-prod"
@@ -61,10 +100,18 @@ discovery:
 
       - name: "vm-ai-02"
         endpoint: "tcp://192.168.122.11:5555"
+        tenant: "tenant-beta"       # Automatically routes to qrouter-1234abcd-6666
         labels:
           vm_name: "vm-ai-02"
           cluster: "inference"
           environment: "production"
+
+      # Explicit namespace override example
+      - name: "vm-custom-netns"
+        endpoint: "tcp://10.200.1.5:5555"
+        netns: "/var/run/netns/isolated-env"
+        labels:
+          vm_name: "vm-custom-netns"
 
       # IPv6 Global Unicast target example
       - name: "vm-ai-ipv6"
@@ -97,6 +144,9 @@ discovery:
     # When true, only domains with assigned GPU PCI passthrough or vGPU devices are monitored.
     filter_gpu_only: true
 
+    # Optional default network namespace fallback for libvirt discovered VMs
+    # default_netns: "qrouter-default"
+
   # 3. OpenStack Nova compute API discovery
   nova:
     enabled: false
@@ -116,6 +166,9 @@ discovery:
     ip_version: "ipv4"
 
     filter_gpu_only: true
+
+    # Optional default network namespace fallback for nova discovered VMs
+    # default_netns: "qrouter-default"
 
   # 4. Dynamic File/Directory Watcher
   file:

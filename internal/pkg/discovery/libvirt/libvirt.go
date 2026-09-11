@@ -139,14 +139,29 @@ func (p *Provider) scanWithVirsh(virshPath string) ([]appconfig.Target, error) {
 			continue
 		}
 
+		tenantUUID, tenantName := dom.GetTenant()
+		labels := map[string]string{
+			"vm_name": dom.Name,
+			"vm_uuid": dom.UUID,
+		}
+		tenant := tenantUUID
+		if tenant == "" {
+			tenant = tenantName
+		}
+		if tenant != "" {
+			labels["tenant"] = tenant
+			if tenantUUID != "" {
+				labels["project_id"] = tenantUUID
+			}
+		}
+
 		targets = append(targets, appconfig.Target{
 			ID:       dom.UUID,
 			Name:     dom.Name,
 			Endpoint: endpoint,
-			Labels: map[string]string{
-				"vm_name": dom.Name,
-				"vm_uuid": dom.UUID,
-			},
+			Tenant:   tenant,
+			NetNS:    p.cfg.DefaultNetNS,
+			Labels:   labels,
 		})
 	}
 
@@ -323,14 +338,29 @@ func (p *Provider) scanFromQEMURuntime() []appconfig.Target {
 			}
 
 			if cid := dom.GetVsockCID(); cid != "" {
+				tenantUUID, tenantName := dom.GetTenant()
+				labels := map[string]string{
+					"vm_name": dom.Name,
+					"vm_uuid": dom.UUID,
+				}
+				tenant := tenantUUID
+				if tenant == "" {
+					tenant = tenantName
+				}
+				if tenant != "" {
+					labels["tenant"] = tenant
+					if tenantUUID != "" {
+						labels["project_id"] = tenantUUID
+					}
+				}
+
 				targets = append(targets, appconfig.Target{
 					ID:       dom.UUID,
 					Name:     dom.Name,
 					Endpoint: fmt.Sprintf("vsock://%s:%d", cid, p.cfg.DefaultPort),
-					Labels: map[string]string{
-						"vm_name": dom.Name,
-						"vm_uuid": dom.UUID,
-					},
+					Tenant:   tenant,
+					NetNS:    p.cfg.DefaultNetNS,
+					Labels:   labels,
 				})
 			}
 		}

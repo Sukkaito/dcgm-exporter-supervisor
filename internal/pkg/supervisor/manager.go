@@ -93,18 +93,21 @@ func (m *Manager) Reconcile(desired []appconfig.Target) {
 			continue
 		}
 
-		// If endpoint or critical args changed, restart instance
-		if existing.Target.Endpoint != t.Endpoint {
-			slog.Info("Endpoint changed for target, restarting instance",
+		// If endpoint or critical configuration (like netns) changed, restart instance
+		if existing.Target.Endpoint != t.Endpoint || existing.Target.NetNS != t.NetNS {
+			slog.Info("Target configuration changed, restarting instance",
 				slog.String("target", t.Name),
 				slog.String("old_endpoint", existing.Target.Endpoint),
-				slog.String("new_endpoint", t.Endpoint))
+				slog.String("new_endpoint", t.Endpoint),
+				slog.String("old_netns", existing.Target.NetNS),
+				slog.String("new_netns", t.NetNS))
 			existing.Stop()
 			existing.Target = t
 			existing.Start(m.ctx)
 		} else {
-			// Update dynamic labels
+			// Update dynamic fields
 			existing.Target.Labels = t.Labels
+			existing.Target.Tenant = t.Tenant
 		}
 	}
 }

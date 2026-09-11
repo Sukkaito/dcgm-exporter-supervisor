@@ -33,6 +33,7 @@ import (
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/discovery/libvirt"
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/discovery/nova"
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/discovery/static"
+	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/netns"
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/server"
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/supervisor"
 )
@@ -53,6 +54,8 @@ const (
 	CLIPortRangeStart     = "port-range-start"
 	CLIPortRangeEnd       = "port-range-end"
 	CLIShutdownTimeout    = "shutdown-timeout"
+	CLINetNSDefault       = "netns-default"
+	CLINetNSTemplate      = "netns-template"
 )
 
 // NewApp creates the CLI application for dcgm-exporter-supervisor.
@@ -156,6 +159,18 @@ func NewApp(buildVersion string) *cli.App {
 			Usage:   "Graceful termination timeout before SIGKILL is sent to child processes.",
 			EnvVars: []string{"DCGM_SUPERVISOR_SHUTDOWN_TIMEOUT"},
 		},
+		&cli.StringFlag{
+			Name:    CLINetNSDefault,
+			Value:   "",
+			Usage:   "Default fallback network namespace for child dcgm-exporter instances.",
+			EnvVars: []string{"DCGM_SUPERVISOR_NETNS_DEFAULT"},
+		},
+		&cli.StringFlag{
+			Name:    CLINetNSTemplate,
+			Value:   "",
+			Usage:   "Dynamic template for tenant-based network namespace (e.g. \"qrouter-{{.Tenant}}\").",
+			EnvVars: []string{"DCGM_SUPERVISOR_NETNS_TEMPLATE"},
+		},
 	}
 
 	c.Action = runSupervisor
@@ -239,6 +254,12 @@ func runSupervisor(c *cli.Context) error {
 	if c.IsSet(CLIShutdownTimeout) {
 		cfg.Exporter.ShutdownTimeout = c.Duration(CLIShutdownTimeout)
 	}
+	if c.IsSet(CLINetNSDefault) {
+		cfg.NetNS.DefaultNetNS = c.String(CLINetNSDefault)
+	}
+	if c.IsSet(CLINetNSTemplate) {
+		cfg.NetNS.Template = c.String(CLINetNSTemplate)
+	}
 
 	configureLogger(cfg.LogFormat, cfg.Debug)
 
@@ -259,6 +280,8 @@ func runSupervisor(c *cli.Context) error {
 		slog.String("listen_address", cfg.Address),
 		slog.String("exporter_bin", cfg.Exporter.BinaryPath),
 		slog.String("socket_dir", cfg.Exporter.SocketDir))
+
+	netnsResolver := netns.NewResolver(cfg.NetNS)
 
 	mgr := supervisor.NewManager(cfg.Exporter, nil)
 	mgr.StartHealthLoop(15 * time.Second)
@@ -284,7 +307,7 @@ func runSupervisor(c *cli.Context) error {
 
 	targetCh := discMgr.Start(ctx)
 
-	// Watch target updates from discovery and reconcile child instances
+	// Watch target updates from discovery, resolve netns, and reconcile child instances
 	go func() {
 		for {
 			select {
@@ -293,6 +316,20 @@ func runSupervisor(c *cli.Context) error {
 			case targets, ok := <-targetCh:
 				if !ok {
 					return
+				}
+				for i := range targets {
+					if targets[i].NetNS == "" {
+						targets[i].NetNS = netnsResolver.Resolve(&targets[i])
+					}
+					if targets[i].Labels == nil {
+						targets[i].Labels = make(map[string]string)
+					}
+					if targets[i].Tenant != "" && targets[i].Labels["tenant"] == "" {
+						targets[i].Labels["tenant"] = targets[i].Tenant
+					}
+					if targets[i].NetNS != "" && targets[i].Labels["netns"] == "" {
+						targets[i].Labels["netns"] = targets[i].NetNS
+					}
 				}
 				slog.Info("Target inventory update received", slog.Int("count", len(targets)))
 				mgr.Reconcile(targets)
@@ -327,8 +364,25 @@ func runSupervisor(c *cli.Context) error {
 					newCfg, err := appconfig.LoadConfigFile(configFile)
 					if err == nil {
 						cfg = newCfg
+						netnsResolver = netns.NewResolver(cfg.NetNS)
 						if cfg.Discovery.Static.Enabled {
-							mgr.Reconcile(cfg.Discovery.Static.Targets)
+							targets := make([]appconfig.Target, len(cfg.Discovery.Static.Targets))
+							copy(targets, cfg.Discovery.Static.Targets)
+							for i := range targets {
+								if targets[i].NetNS == "" {
+									targets[i].NetNS = netnsResolver.Resolve(&targets[i])
+								}
+								if targets[i].Labels == nil {
+									targets[i].Labels = make(map[string]string)
+								}
+								if targets[i].Tenant != "" && targets[i].Labels["tenant"] == "" {
+									targets[i].Labels["tenant"] = targets[i].Tenant
+								}
+								if targets[i].NetNS != "" && targets[i].Labels["netns"] == "" {
+									targets[i].Labels["netns"] = targets[i].NetNS
+								}
+							}
+							mgr.Reconcile(targets)
 						}
 					} else {
 						slog.Error("Failed to reload config on SIGHUP", slog.String("error", err.Error()))

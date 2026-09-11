@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -158,5 +159,73 @@ func TestInstanceSocketActivationEndToEnd(t *testing.T) {
 	inst.Stop()
 	if _, err := os.Stat(sockPath); !os.IsNotExist(err) {
 		t.Fatalf("expected socket file %s to be unlinked after Stop", sockPath)
+	}
+}
+
+func TestInstance_CommandBuildingNetNS(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	tests := []struct {
+		name        string
+		netns       string
+		expectedBin string
+		prefixArgs  []string
+	}{
+		{
+			name:        "empty netns uses direct sh",
+			netns:       "",
+			expectedBin: "sh",
+			prefixArgs:  []string{"-c", "export LISTEN_PID=$$; exec \"$@\"", "_", "dcgm-exporter"},
+		},
+		{
+			name:        "named netns uses ip netns exec",
+			netns:       "qrouter-1234",
+			expectedBin: "ip",
+			prefixArgs:  []string{"netns", "exec", "qrouter-1234", "sh", "-c", "export LISTEN_PID=$$; exec \"$@\"", "_", "dcgm-exporter"},
+		},
+		{
+			name:        "path netns uses nsenter",
+			netns:       "/run/netns/tenant-x",
+			expectedBin: "nsenter",
+			prefixArgs:  []string{"--net=/run/netns/tenant-x", "-F", "--", "sh", "-c", "export LISTEN_PID=$$; exec \"$@\"", "_", "dcgm-exporter"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target := appconfig.Target{
+				ID:       "test-vm",
+				Name:     "test-vm",
+				Endpoint: "tcp://10.0.0.1:5555",
+				NetNS:    tt.netns,
+			}
+			cfg := appconfig.ExporterConfig{
+				BinaryPath: "dcgm-exporter",
+				SocketDir:  tmpDir,
+			}
+
+			var capturedBin string
+			var capturedArgs []string
+
+			builder := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+				capturedBin = name
+				capturedArgs = args
+				// Return a harmless command that exits immediately
+				return exec.CommandContext(ctx, "true")
+			}
+
+			sockPath := filepath.Join(tmpDir, "test-vm.sock")
+			inst := NewInstance(target, sockPath, cfg, builder)
+			_ = inst.execProcess(context.Background())
+
+			if capturedBin != tt.expectedBin {
+				t.Errorf("expected binary %s, got %s", tt.expectedBin, capturedBin)
+			}
+			for i, pfx := range tt.prefixArgs {
+				if i >= len(capturedArgs) || capturedArgs[i] != pfx {
+					t.Errorf("arg mismatch at %d: expected %s, got %v", i, pfx, capturedArgs)
+				}
+			}
+		})
 	}
 }

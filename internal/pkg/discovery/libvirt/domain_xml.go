@@ -19,14 +19,18 @@ package libvirt
 import (
 	"encoding/xml"
 	"fmt"
+	"strings"
 )
 
 // DomainXML mirrors relevant parts of Libvirt domain XML.
 type DomainXML struct {
-	XMLName xml.Name `xml:"domain"`
-	Name    string   `xml:"name"`
-	UUID    string   `xml:"uuid"`
-	Devices struct {
+	XMLName     xml.Name       `xml:"domain"`
+	Name        string         `xml:"name"`
+	UUID        string         `xml:"uuid"`
+	Title       string         `xml:"title"`
+	Description string         `xml:"description"`
+	Metadata    DomainMetadata `xml:"metadata"`
+	Devices     struct {
 		Hostdevs   []Hostdev `xml:"hostdev"`
 		Vsock      *Vsock    `xml:"vsock"`
 		Interfaces []struct {
@@ -35,6 +39,22 @@ type DomainXML struct {
 			} `xml:"mac"`
 		} `xml:"interface"`
 	} `xml:"devices"`
+}
+
+type NovaProject struct {
+	UUID string `xml:"uuid,attr"`
+	Name string `xml:",chardata"`
+}
+
+type NovaInstance struct {
+	Project *NovaProject `xml:"project"`
+	Owner   struct {
+		Project *NovaProject `xml:"project"`
+	} `xml:"owner"`
+}
+
+type DomainMetadata struct {
+	NovaInstance *NovaInstance `xml:"instance"`
 }
 
 type Hostdev struct {
@@ -74,4 +94,23 @@ func (d *DomainXML) GetVsockCID() string {
 		return d.Devices.Vsock.CID.Address
 	}
 	return ""
+}
+
+// GetTenant returns the tenant/project UUID and/or name if defined in metadata or tags.
+func (d *DomainXML) GetTenant() (string, string) {
+	if d.Metadata.NovaInstance != nil {
+		if d.Metadata.NovaInstance.Owner.Project != nil && d.Metadata.NovaInstance.Owner.Project.UUID != "" {
+			return d.Metadata.NovaInstance.Owner.Project.UUID, d.Metadata.NovaInstance.Owner.Project.Name
+		}
+		if d.Metadata.NovaInstance.Project != nil && d.Metadata.NovaInstance.Project.UUID != "" {
+			return d.Metadata.NovaInstance.Project.UUID, d.Metadata.NovaInstance.Project.Name
+		}
+	}
+	if strings.HasPrefix(d.Title, "tenant:") {
+		return strings.TrimPrefix(d.Title, "tenant:"), ""
+	}
+	if strings.HasPrefix(d.Description, "tenant:") {
+		return strings.TrimPrefix(d.Description, "tenant:"), ""
+	}
+	return "", ""
 }

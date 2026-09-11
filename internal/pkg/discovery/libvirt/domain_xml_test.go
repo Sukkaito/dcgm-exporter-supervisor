@@ -70,3 +70,42 @@ func TestParseDomainXML(t *testing.T) {
 		t.Errorf("expected HasGPU to be false for non-GPU domain")
 	}
 }
+
+func TestParseDomainXML_Tenant(t *testing.T) {
+	// Nova instance with owner project
+	xmlNovaOwner := `<domain type='kvm'>
+  <name>instance-00000001</name>
+  <uuid>c7a5fdb1-c034-47a3-a740-4284b067d581</uuid>
+  <metadata>
+    <nova:instance xmlns:nova="http://openstack.org/xmlns/libvirt/nova/1.0">
+      <nova:owner>
+        <nova:project uuid="tenant-uuid-1234">tenant-alpha</nova:project>
+      </nova:owner>
+    </nova:instance>
+  </metadata>
+</domain>`
+
+	dom, err := ParseDomainXML([]byte(xmlNovaOwner))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	uuid, name := dom.GetTenant()
+	if uuid != "tenant-uuid-1234" || name != "tenant-alpha" {
+		t.Errorf("expected tenant-uuid-1234 / tenant-alpha, got uuid=%s name=%s", uuid, name)
+	}
+
+	// Title fallback
+	xmlTitle := `<domain type='kvm'>
+  <name>custom-vm</name>
+  <uuid>c7a5fdb1-c034-47a3-a740-4284b067d582</uuid>
+  <title>tenant:tenant-beta</title>
+</domain>`
+	domTitle, err := ParseDomainXML([]byte(xmlTitle))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	uuid2, _ := domTitle.GetTenant()
+	if uuid2 != "tenant-beta" {
+		t.Errorf("expected tenant-beta, got %s", uuid2)
+	}
+}

@@ -165,3 +165,51 @@ func TestInstanceScrapeAndHealthUnixSocket(t *testing.T) {
 		t.Fatalf("expected socket file %s to be removed, but stat err: %v", sockPath, err)
 	}
 }
+
+func TestSupervisorManagerReconcile_NetNSChange(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := appconfig.ExporterConfig{
+		BinaryPath:      "sleep",
+		SocketDir:       tmpDir,
+		ShutdownTimeout: 1 * time.Second,
+	}
+
+	mgr := NewManager(cfg, mockCommandBuilder)
+	defer mgr.Shutdown()
+
+	target1 := appconfig.Target{
+		ID:       "vm-netns",
+		Name:     "vm-netns",
+		Endpoint: "tcp://10.0.0.1:5555",
+		NetNS:    "ns-old",
+	}
+
+	mgr.Reconcile([]appconfig.Target{target1})
+
+	inst, found := mgr.GetInstance("vm-netns")
+	if !found {
+		t.Fatal("expected vm-netns to be found")
+	}
+	if inst.Target.NetNS != "ns-old" {
+		t.Fatalf("expected ns-old, got %s", inst.Target.NetNS)
+	}
+
+	// Update NetNS
+	target2 := appconfig.Target{
+		ID:       "vm-netns",
+		Name:     "vm-netns",
+		Endpoint: "tcp://10.0.0.1:5555",
+		NetNS:    "ns-new",
+	}
+
+	mgr.Reconcile([]appconfig.Target{target2})
+
+	instUpdated, found := mgr.GetInstance("vm-netns")
+	if !found {
+		t.Fatal("expected vm-netns to be found after update")
+	}
+	if instUpdated.Target.NetNS != "ns-new" {
+		t.Fatalf("expected ns-new, got %s", instUpdated.Target.NetNS)
+	}
+}

@@ -139,15 +139,18 @@ func (inst *Instance) SetHTTPClient(client *http.Client) {
 // Start launches the supervision loop for the child process.
 func (inst *Instance) Start(parentCtx context.Context) {
 	ctx, cancel := context.WithCancel(parentCtx)
+	stoppedCh := make(chan struct{})
+
 	inst.mu.Lock()
 	inst.cancelFunc = cancel
+	inst.stoppedCh = stoppedCh
 	inst.mu.Unlock()
 
-	go inst.runLoop(ctx)
+	go inst.runLoop(ctx, stoppedCh)
 }
 
-func (inst *Instance) runLoop(ctx context.Context) {
-	defer close(inst.stoppedCh)
+func (inst *Instance) runLoop(ctx context.Context, stoppedCh chan struct{}) {
+	defer close(stoppedCh)
 
 	backoff := 1 * time.Second
 	maxBackoff := 30 * time.Second
@@ -245,8 +248,26 @@ func (inst *Instance) execProcess(ctx context.Context) error {
 	args = append(args, inst.Target.CustomArgs...)
 
 	// Execute via sh -c so LISTEN_PID=$$ matches child PID for go-systemd activation
-	cmdArgs := append([]string{"-c", "export LISTEN_PID=$$; exec \"$@\"", "_", inst.Config.BinaryPath}, args...)
-	cmd := inst.cmdBuilder(ctx, "sh", cmdArgs...)
+	shCmd := append([]string{"-c", "export LISTEN_PID=$$; exec \"$@\"", "_", inst.Config.BinaryPath}, args...)
+
+	netns := inst.Target.NetNS
+	var binName string
+	var binArgs []string
+
+	if netns == "" {
+		binName = "sh"
+		binArgs = shCmd
+	} else if strings.HasPrefix(netns, "/") {
+		// Namespace file path: nsenter --net=<path> -F -- sh -c ...
+		binName = "nsenter"
+		binArgs = append([]string{"--net=" + netns, "-F", "--", "sh"}, shCmd...)
+	} else {
+		// Named namespace: ip netns exec <name> sh -c ...
+		binName = "ip"
+		binArgs = append([]string{"netns", "exec", netns, "sh"}, shCmd...)
+	}
+
+	cmd := inst.cmdBuilder(ctx, binName, binArgs...)
 	cmd.ExtraFiles = []*os.File{listenerFile}
 	cmd.Env = append(os.Environ(), "LISTEN_FDS=1")
 
@@ -273,6 +294,7 @@ func (inst *Instance) execProcess(ctx context.Context) error {
 		slog.String("target", inst.Target.Name),
 		slog.Int("pid", inst.pid),
 		slog.String("socket", inst.SocketPath),
+		slog.String("netns", netns),
 		slog.String("endpoint", inst.Target.Endpoint))
 
 	go inst.streamLogs(stdout, "stdout")
@@ -304,6 +326,7 @@ func (inst *Instance) Stop() {
 	inst.mu.Lock()
 	cancel := inst.cancelFunc
 	pid := inst.pid
+	stoppedCh := inst.stoppedCh
 	inst.mu.Unlock()
 
 	if cancel != nil {
@@ -314,21 +337,22 @@ func (inst *Instance) Stop() {
 		proc, err := os.FindProcess(pid)
 		if err == nil {
 			_ = proc.Signal(syscall.SIGTERM)
+		}
+	}
 
-			// Wait with timeout, then SIGKILL
-			done := make(chan struct{})
-			go func() {
-				<-inst.stoppedCh
-				close(done)
-			}()
-
-			select {
-			case <-done:
-			case <-time.After(inst.Config.ShutdownTimeout):
-				slog.Warn("Child dcgm-exporter did not terminate cleanly, sending SIGKILL",
-					slog.String("target", inst.Target.Name),
-					slog.Int("pid", pid))
-				_ = proc.Signal(syscall.SIGKILL)
+	// Wait with timeout for the supervisor runLoop to exit cleanly
+	if stoppedCh != nil {
+		select {
+		case <-stoppedCh:
+		case <-time.After(inst.Config.ShutdownTimeout):
+			if pid > 0 {
+				proc, err := os.FindProcess(pid)
+				if err == nil {
+					slog.Warn("Child dcgm-exporter did not terminate cleanly, sending SIGKILL",
+						slog.String("target", inst.Target.Name),
+						slog.Int("pid", pid))
+					_ = proc.Signal(syscall.SIGKILL)
+				}
 			}
 		}
 	}

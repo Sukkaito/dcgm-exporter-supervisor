@@ -164,15 +164,19 @@ func (p *Provider) scanServers(ctx context.Context) ([]appconfig.Target, error) 
 			"vm_name":    s.Name,
 			"vm_id":      s.ID,
 			"project_id": s.TenantID,
+			"tenant":     s.TenantID,
 		}
 		for k, v := range s.Metadata {
 			labels["nova_"+k] = v
 		}
 
+		targetNetNS := p.cfg.DefaultNetNS
 		targets = append(targets, appconfig.Target{
 			ID:       s.ID,
 			Name:     s.Name,
 			Endpoint: endpoint,
+			Tenant:   s.TenantID,
+			NetNS:    targetNetNS,
 			Labels:   labels,
 		})
 	}
