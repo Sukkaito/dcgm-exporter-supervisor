@@ -40,6 +40,8 @@ const (
 	DefaultFilePollInterval    = 15 * time.Second
 	DefaultHostEnginePort      = 5555
 	DefaultExporterListenHost  = "127.0.0.1"
+	DefaultSocketDir           = "/run/dcgm-exporter-supervisor"
+	FallbackSocketDir          = "/tmp/dcgm-exporter-supervisor"
 )
 
 // Target represents a discovered or statically defined target VM / hostengine.
@@ -104,14 +106,17 @@ type DiscoveryConfig struct {
 // ExporterConfig configures child dcgm-exporter processes.
 type ExporterConfig struct {
 	BinaryPath      string        `yaml:"binary_path"`
-	ListenHost      string        `yaml:"listen_host"` // defaults to 127.0.0.1; can be set to ::1 or [::1]
+	SocketDir       string        `yaml:"socket_dir"` // directory for child UNIX domain sockets
 	CollectorsFile  string        `yaml:"collectors_file"`
 	CollectInterval int           `yaml:"collect_interval"` // ms
-	PortRangeStart  int           `yaml:"port_range_start"`
-	PortRangeEnd    int           `yaml:"port_range_end"`
 	ExtraArgs       []string      `yaml:"extra_args"`
 	WebConfigFile   string        `yaml:"web_config_file"`
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+
+	// Deprecated: child instances now communicate via UNIX domain sockets.
+	ListenHost     string `yaml:"listen_host,omitempty"`
+	PortRangeStart int    `yaml:"port_range_start,omitempty"`
+	PortRangeEnd   int    `yaml:"port_range_end,omitempty"`
 }
 
 // Config represents the top-level supervisor configuration.
@@ -141,12 +146,13 @@ func NewDefaultConfig() *Config {
 		WebWriteTimeout: DefaultWebWriteTimeout,
 		Exporter: ExporterConfig{
 			BinaryPath:      DefaultExporterBinary,
-			ListenHost:      DefaultExporterListenHost,
+			SocketDir:       DefaultSocketDir,
 			CollectorsFile:  DefaultCollectorsFile,
 			CollectInterval: DefaultCollectInterval,
+			ShutdownTimeout: DefaultShutdownTimeout,
+			ListenHost:      DefaultExporterListenHost,
 			PortRangeStart:  DefaultPortRangeStart,
 			PortRangeEnd:    DefaultPortRangeEnd,
-			ShutdownTimeout: DefaultShutdownTimeout,
 		},
 		Discovery: DiscoveryConfig{
 			Static: StaticConfig{

@@ -22,10 +22,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -56,6 +59,7 @@ func defaultCommandBuilder(ctx context.Context, name string, args ...string) *ex
 type Instance struct {
 	mu         sync.RWMutex
 	Target     appconfig.Target
+	SocketPath string
 	Port       int
 	Config     appconfig.ExporterConfig
 	cmdBuilder CommandBuilder
@@ -71,30 +75,65 @@ type Instance struct {
 }
 
 // NewInstance creates a new Instance configuration.
-func NewInstance(target appconfig.Target, port int, cfg appconfig.ExporterConfig, builder CommandBuilder) *Instance {
+// If socketPath is empty, it is generated based on target ID and cfg.SocketDir.
+func NewInstance(target appconfig.Target, socketPath string, cfg appconfig.ExporterConfig, builder CommandBuilder) *Instance {
 	if builder == nil {
 		builder = defaultCommandBuilder
 	}
 	if cfg.ShutdownTimeout <= 0 {
 		cfg.ShutdownTimeout = appconfig.DefaultShutdownTimeout
 	}
-	if cfg.ListenHost == "" {
-		cfg.ListenHost = appconfig.DefaultExporterListenHost
+	if cfg.SocketDir == "" {
+		cfg.SocketDir = appconfig.DefaultSocketDir
+	}
+	if socketPath == "" {
+		targetID := target.ID
+		if targetID == "" {
+			targetID = target.Name
+		}
+		socketPath = filepath.Join(cfg.SocketDir, sanitizeSocketName(targetID)+".sock")
 	}
 	if normalized, err := netutil.NormalizeEndpoint(target.Endpoint, 5555); err == nil {
 		target.Endpoint = normalized
 	}
+
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+		},
+	}
+
 	return &Instance{
 		Target:     target,
-		Port:       port,
+		SocketPath: socketPath,
 		Config:     cfg,
 		cmdBuilder: builder,
 		httpClient: &http.Client{
-			Timeout: 5 * time.Second,
+			Timeout:   5 * time.Second,
+			Transport: transport,
 		},
 		state:     StateStarting,
 		stoppedCh: make(chan struct{}),
 	}
+}
+
+func sanitizeSocketName(name string) string {
+	var sb strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			sb.WriteRune(r)
+		} else {
+			sb.WriteRune('_')
+		}
+	}
+	return sb.String()
+}
+
+// SetHTTPClient overrides the internal HTTP client (useful for testing).
+func (inst *Instance) SetHTTPClient(client *http.Client) {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	inst.httpClient = client
 }
 
 // Start launches the supervision loop for the child process.
@@ -136,7 +175,7 @@ func (inst *Instance) runLoop(ctx context.Context) {
 		inst.setState(StateRestarting)
 		slog.Warn("Child dcgm-exporter exited, scheduling restart",
 			slog.String("target", inst.Target.Name),
-			slog.Int("port", inst.Port),
+			slog.String("socket", inst.SocketPath),
 			slog.String("error", fmt.Sprint(err)),
 			slog.Duration("backoff", backoff))
 
@@ -154,9 +193,43 @@ func (inst *Instance) runLoop(ctx context.Context) {
 }
 
 func (inst *Instance) execProcess(ctx context.Context) error {
+	// 1. Ensure parent directory for socket exists
+	if dir := filepath.Dir(inst.SocketPath); dir != "" {
+		_ = os.MkdirAll(dir, 0755)
+	}
+
+	// 2. Remove stale socket if any
+	_ = os.Remove(inst.SocketPath)
+
+	// 3. Create UNIX domain listener for socket activation
+	listener, err := net.Listen("unix", inst.SocketPath)
+	if err != nil {
+		return fmt.Errorf("failed to listen on unix socket %s: %w", inst.SocketPath, err)
+	}
+	defer func() {
+		_ = os.Remove(inst.SocketPath)
+	}()
+
+	unixListener, ok := listener.(*net.UnixListener)
+	if !ok {
+		listener.Close()
+		return fmt.Errorf("listener is not a UnixListener")
+	}
+	// Prevent parent Close() from unlinking the socket file
+	unixListener.SetUnlinkOnClose(false)
+
+	listenerFile, err := unixListener.File()
+	if err != nil {
+		listener.Close()
+		return fmt.Errorf("failed to get listener file descriptor: %w", err)
+	}
+	listener.Close()
+	defer listenerFile.Close()
+
+	// 4. Build command arguments for child dcgm-exporter
 	args := []string{
+		"--web-systemd-socket",
 		"-r", inst.Target.Endpoint,
-		"-a", netutil.FormatHostPort(inst.Config.ListenHost, inst.Port),
 	}
 
 	if inst.Config.CollectorsFile != "" {
@@ -171,7 +244,11 @@ func (inst *Instance) execProcess(ctx context.Context) error {
 	args = append(args, inst.Config.ExtraArgs...)
 	args = append(args, inst.Target.CustomArgs...)
 
-	cmd := inst.cmdBuilder(ctx, inst.Config.BinaryPath, args...)
+	// Execute via sh -c so LISTEN_PID=$$ matches child PID for go-systemd activation
+	cmdArgs := append([]string{"-c", "export LISTEN_PID=$$; exec \"$@\"", "_", inst.Config.BinaryPath}, args...)
+	cmd := inst.cmdBuilder(ctx, "sh", cmdArgs...)
+	cmd.ExtraFiles = []*os.File{listenerFile}
+	cmd.Env = append(os.Environ(), "LISTEN_FDS=1")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -195,7 +272,7 @@ func (inst *Instance) execProcess(ctx context.Context) error {
 	slog.Info("Child dcgm-exporter started",
 		slog.String("target", inst.Target.Name),
 		slog.Int("pid", inst.pid),
-		slog.Int("port", inst.Port),
+		slog.String("socket", inst.SocketPath),
 		slog.String("endpoint", inst.Target.Endpoint))
 
 	go inst.streamLogs(stdout, "stdout")
@@ -215,15 +292,10 @@ func (inst *Instance) streamLogs(r io.Reader, pipeName string) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		text := scanner.Text()
-		if pipeName == "stderr" {
-			slog.Debug("[dcgm-exporter] "+text,
-				slog.String("target", inst.Target.Name),
-				slog.Int("port", inst.Port))
-		} else {
-			slog.Debug("[dcgm-exporter] "+text,
-				slog.String("target", inst.Target.Name),
-				slog.Int("port", inst.Port))
-		}
+		slog.Debug("[dcgm-exporter] "+text,
+			slog.String("target", inst.Target.Name),
+			slog.String("socket", inst.SocketPath),
+			slog.String("stream", pipeName))
 	}
 }
 
@@ -261,6 +333,10 @@ func (inst *Instance) Stop() {
 		}
 	}
 
+	if inst.SocketPath != "" {
+		_ = os.Remove(inst.SocketPath)
+	}
+
 	inst.setState(StateStopped)
 }
 
@@ -279,7 +355,10 @@ func (inst *Instance) State() InstanceState {
 
 // CheckHealth probes the instance /health endpoint.
 func (inst *Instance) CheckHealth(ctx context.Context) error {
-	url := netutil.FormatHTTPURL("http", inst.Config.ListenHost, inst.Port, "/health")
+	url := "http://unix/health"
+	if inst.SocketPath == "" && inst.Port > 0 {
+		url = netutil.FormatHTTPURL("http", inst.Config.ListenHost, inst.Port, "/health")
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -303,7 +382,10 @@ func (inst *Instance) CheckHealth(ctx context.Context) error {
 
 // Scrape fetches the /metrics endpoint from this instance.
 func (inst *Instance) Scrape(ctx context.Context) ([]byte, error) {
-	url := netutil.FormatHTTPURL("http", inst.Config.ListenHost, inst.Port, "/metrics")
+	url := "http://unix/metrics"
+	if inst.SocketPath == "" && inst.Port > 0 {
+		url = netutil.FormatHTTPURL("http", inst.Config.ListenHost, inst.Port, "/metrics")
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

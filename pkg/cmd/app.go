@@ -27,7 +27,6 @@ import (
 
 	"github.com/urfave/cli/v2"
 
-	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/allocator"
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/appconfig"
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/discovery"
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/discovery/file"
@@ -49,6 +48,7 @@ const (
 	CLILogFormat          = "log-format"
 	CLIDebugMode          = "debug"
 	CLIDcgmExporterBin    = "dcgm-exporter-bin"
+	CLISocketDir          = "socket-dir"
 	CLIExporterListenHost = "exporter-listen-host"
 	CLIPortRangeStart     = "port-range-start"
 	CLIPortRangeEnd       = "port-range-end"
@@ -125,6 +125,12 @@ func NewApp(buildVersion string) *cli.App {
 			Value:   appconfig.DefaultExporterBinary,
 			Usage:   "Path or executable name of dcgm-exporter binary.",
 			EnvVars: []string{"DCGM_EXPORTER_BINARY"},
+		},
+		&cli.StringFlag{
+			Name:    CLISocketDir,
+			Value:   appconfig.DefaultSocketDir,
+			Usage:   "Directory for internal UNIX domain sockets connecting to child dcgm-exporter processes.",
+			EnvVars: []string{"DCGM_SUPERVISOR_SOCKET_DIR"},
 		},
 		&cli.StringFlag{
 			Name:    CLIExporterListenHost,
@@ -215,6 +221,12 @@ func runSupervisor(c *cli.Context) error {
 	if c.IsSet(CLIDcgmExporterBin) {
 		cfg.Exporter.BinaryPath = c.String(CLIDcgmExporterBin)
 	}
+	if c.IsSet(CLISocketDir) {
+		cfg.Exporter.SocketDir = c.String(CLISocketDir)
+	}
+	if cfg.Exporter.SocketDir == "" {
+		cfg.Exporter.SocketDir = appconfig.DefaultSocketDir
+	}
 	if c.IsSet(CLIExporterListenHost) {
 		cfg.Exporter.ListenHost = c.String(CLIExporterListenHost)
 	}
@@ -229,19 +241,26 @@ func runSupervisor(c *cli.Context) error {
 	}
 
 	configureLogger(cfg.LogFormat, cfg.Debug)
+
+	// Ensure socket directory exists; attempt fallback to /tmp if default /run is not writable
+	if err := os.MkdirAll(cfg.Exporter.SocketDir, 0755); err != nil {
+		slog.Warn("Failed to create socket directory, falling back to temp directory",
+			slog.String("attempted", cfg.Exporter.SocketDir),
+			slog.String("fallback", appconfig.FallbackSocketDir),
+			slog.String("error", err.Error()))
+		cfg.Exporter.SocketDir = appconfig.FallbackSocketDir
+		if err := os.MkdirAll(cfg.Exporter.SocketDir, 0755); err != nil {
+			return fmt.Errorf("failed to create socket directory %s: %w", cfg.Exporter.SocketDir, err)
+		}
+	}
+
 	slog.Info("Starting dcgm-exporter-supervisor",
 		slog.String("version", c.App.Version),
 		slog.String("listen_address", cfg.Address),
 		slog.String("exporter_bin", cfg.Exporter.BinaryPath),
-		slog.Int("port_range_start", cfg.Exporter.PortRangeStart),
-		slog.Int("port_range_end", cfg.Exporter.PortRangeEnd))
+		slog.String("socket_dir", cfg.Exporter.SocketDir))
 
-	portAlloc, err := allocator.NewPortAllocator(cfg.Exporter.PortRangeStart, cfg.Exporter.PortRangeEnd)
-	if err != nil {
-		return fmt.Errorf("failed to initialize port allocator: %w", err)
-	}
-
-	mgr := supervisor.NewManager(cfg.Exporter, portAlloc, nil)
+	mgr := supervisor.NewManager(cfg.Exporter, nil)
 	mgr.StartHealthLoop(15 * time.Second)
 
 	discMgr := discovery.NewManager()

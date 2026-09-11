@@ -23,13 +23,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/prometheus/exporter-toolkit/web"
 
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/appconfig"
-	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/netutil"
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/proxy"
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/supervisor"
 )
@@ -187,17 +187,25 @@ func (s *Server) handleTargets(w http.ResponseWriter, r *http.Request) {
 	instances := s.manager.ListInstances()
 	sdTargets := make([]HTTPSDTarget, 0, len(instances))
 
+	// Resolve target host for Prometheus scraping
+	targetHost := s.cfg.Address
+	if strings.HasPrefix(targetHost, ":") {
+		targetHost = "localhost" + targetHost
+	}
+
 	for _, inst := range instances {
-		labels := make(map[string]string, len(inst.Target.Labels)+2)
+		labels := make(map[string]string, len(inst.Target.Labels)+4)
 		for k, v := range inst.Target.Labels {
 			labels[k] = v
 		}
 		labels["vm_name"] = inst.Target.Name
 		labels["target_id"] = inst.Target.ID
 		labels["endpoint"] = inst.Target.Endpoint
+		labels["__metrics_path__"] = "/probe"
+		labels["__param_target"] = inst.Target.ID
 
 		sdTargets = append(sdTargets, HTTPSDTarget{
-			Targets: []string{netutil.FormatHostPort(inst.Config.ListenHost, inst.Port)},
+			Targets: []string{targetHost},
 			Labels:  labels,
 		})
 	}

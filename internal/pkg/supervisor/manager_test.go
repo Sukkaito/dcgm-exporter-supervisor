@@ -20,13 +20,12 @@ import (
 	"context"
 	"net"
 	"net/http"
-	"net/http/httptest"
+	"os"
 	"os/exec"
-	"strconv"
+	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/allocator"
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/appconfig"
 )
 
@@ -36,17 +35,15 @@ func mockCommandBuilder(ctx context.Context, name string, args ...string) *exec.
 }
 
 func TestSupervisorManagerReconcile(t *testing.T) {
-	alloc, err := allocator.NewPortAllocator(9401, 9410)
-	if err != nil {
-		t.Fatalf("failed to create allocator: %v", err)
-	}
+	tmpDir := t.TempDir()
 
 	cfg := appconfig.ExporterConfig{
 		BinaryPath:      "sleep",
+		SocketDir:       tmpDir,
 		ShutdownTimeout: 1 * time.Second,
 	}
 
-	mgr := NewManager(cfg, alloc, mockCommandBuilder)
+	mgr := NewManager(cfg, mockCommandBuilder)
 	defer mgr.Shutdown()
 
 	t1 := appconfig.Target{
@@ -69,13 +66,15 @@ func TestSupervisorManagerReconcile(t *testing.T) {
 	}
 
 	inst1, found := mgr.GetInstance("vm-1")
-	if !found || inst1.Port != 9401 {
-		t.Fatalf("expected vm-1 on port 9401, found: %v, port: %d", found, inst1.Port)
+	expectedSock1 := filepath.Join(tmpDir, "vm-1.sock")
+	if !found || inst1.SocketPath != expectedSock1 {
+		t.Fatalf("expected vm-1 on socket %s, found: %v, path: %s", expectedSock1, found, inst1.SocketPath)
 	}
 
 	inst2, found := mgr.GetInstance("vm-2")
-	if !found || inst2.Port != 9402 {
-		t.Fatalf("expected vm-2 on port 9402, found: %v, port: %d", found, inst2.Port)
+	expectedSock2 := filepath.Join(tmpDir, "vm-2.sock")
+	if !found || inst2.SocketPath != expectedSock2 {
+		t.Fatalf("expected vm-2 on socket %s, found: %v, path: %s", expectedSock2, found, inst2.SocketPath)
 	}
 
 	// 2. Remove vm-1, add vm-3
@@ -100,33 +99,37 @@ func TestSupervisorManagerReconcile(t *testing.T) {
 	if !found {
 		t.Fatal("expected vm-3 to be added")
 	}
-	// vm-1 released port 9401, so vm-3 should get 9401
-	if inst3.Port != 9401 {
-		t.Fatalf("expected vm-3 to get reused port 9401, got %d", inst3.Port)
+	expectedSock3 := filepath.Join(tmpDir, "vm-3.sock")
+	if inst3.SocketPath != expectedSock3 {
+		t.Fatalf("expected vm-3 on socket %s, got %s", expectedSock3, inst3.SocketPath)
 	}
 }
 
-func TestInstanceScrapeAndHealth(t *testing.T) {
-	// Start a mock HTTP server simulating dcgm-exporter
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/health":
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("OK"))
-		case "/metrics":
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("DCGM_FI_DEV_SM_CLOCK{gpu=\"0\"} 139\n"))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer server.Close()
+func TestInstanceScrapeAndHealthUnixSocket(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
 
-	_, portStr, err := net.SplitHostPort(server.Listener.Addr().String())
+	listener, err := net.Listen("unix", sockPath)
 	if err != nil {
-		t.Fatalf("failed to split host port: %v", err)
+		t.Fatalf("failed to create unix listener: %v", err)
 	}
-	port, _ := strconv.Atoi(portStr)
+	defer listener.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("DCGM_FI_DEV_SM_CLOCK{gpu=\"0\"} 139\n"))
+	})
+
+	srv := &http.Server{Handler: mux}
+	go func() {
+		_ = srv.Serve(listener)
+	}()
+	defer srv.Close()
 
 	target := appconfig.Target{
 		ID:       "test-target",
@@ -134,11 +137,11 @@ func TestInstanceScrapeAndHealth(t *testing.T) {
 		Endpoint: "tcp://127.0.0.1:5555",
 	}
 
-	inst := NewInstance(target, port, appconfig.ExporterConfig{}, mockCommandBuilder)
+	inst := NewInstance(target, sockPath, appconfig.ExporterConfig{SocketDir: tmpDir}, mockCommandBuilder)
 
 	ctx := context.Background()
 
-	// Verify health check
+	// Verify health check over UNIX domain socket
 	if err := inst.CheckHealth(ctx); err != nil {
 		t.Fatalf("CheckHealth failed: %v", err)
 	}
@@ -146,7 +149,7 @@ func TestInstanceScrapeAndHealth(t *testing.T) {
 		t.Fatalf("expected state running, got: %s", inst.State())
 	}
 
-	// Verify scrape
+	// Verify scrape over UNIX domain socket
 	metrics, err := inst.Scrape(ctx)
 	if err != nil {
 		t.Fatalf("Scrape failed: %v", err)
@@ -154,5 +157,11 @@ func TestInstanceScrapeAndHealth(t *testing.T) {
 
 	if string(metrics) != "DCGM_FI_DEV_SM_CLOCK{gpu=\"0\"} 139\n" {
 		t.Fatalf("unexpected metrics output: %s", string(metrics))
+	}
+
+	// Verify Stop cleans up the socket file
+	inst.Stop()
+	if _, err := os.Stat(sockPath); !os.IsNotExist(err) {
+		t.Fatalf("expected socket file %s to be removed, but stat err: %v", sockPath, err)
 	}
 }

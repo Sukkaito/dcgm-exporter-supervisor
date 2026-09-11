@@ -69,4 +69,3 @@ func TestParseAndSelectIP(t *testing.T) {
 		}
 	})
 }
-

@@ -12,9 +12,9 @@ However, NVIDIA's `dcgm-exporter` (via `go-dcgm` and `libdcgm.so`) only supports
 
 `dcgm-exporter-supervisor` automates this entire lifecycle:
 - **Dynamic VM Discovery**: Automatically detects running VMs with GPU assignments via Libvirt/KVM (default), OpenStack Nova API, static YAML configuration, or a directory of YAML files (`targets.d/`).
-- **Child Process Supervision**: Spawns and supervises local `dcgm-exporter` child instances, allocates isolated loopback ports, monitors health (`/health`), and performs crash recovery with exponential backoff.
-- **Unified Prometheus Scraping**: Aggregates metrics across all child exporters into a single `/metrics` endpoint with injected `vm_name` and custom target labels, preventing metric collision.
-- **Prometheus HTTP Service Discovery**: Exposes `/targets` for native Prometheus `http_sd_configs`.
+- **Child Process Supervision**: Spawns and supervises local `dcgm-exporter` child instances using **UNIX domain sockets** via native systemd socket activation (`--web-systemd-socket`), eliminating port collisions, port pool limits, and loopback socket exposure on the host.
+- **Unified Prometheus Scraping (Strictly TCP/IP)**: The supervisor HTTP server listens strictly on TCP/IP (`:9400`), aggregates metrics across all child exporters into a single `/metrics` endpoint with injected `vm_name` and custom target labels, preventing metric collision.
+- **Prometheus HTTP Service Discovery**: Exposes `/targets` formatted for Prometheus `http_sd_configs` to scrape per-target `/probe` endpoints.
 - **Multi-Target Probing**: Exposes `/probe?target=<name>` for Blackbox-style Prometheus setups.
 - **Source & Ecosystem Compatibility**: Built on the exact same Go stack and conventions as NVIDIA's `dcgm-exporter` (`urfave/cli/v2`, `gorilla/mux`, `prometheus/exporter-toolkit`, `log/slog`).
 
@@ -27,31 +27,31 @@ However, NVIDIA's `dcgm-exporter` (via `go-dcgm` and `libdcgm.so`) only supports
                         |        Prometheus Server           |
                         +-----------------+------------------+
                                           |
-                         Scrapes /metrics | (or /targets for HTTP SD)
+                        Scrapes /metrics  | (TCP/IP HTTP :9400)
                                           v
 +-----------------------------------------------------------------------------------+
 | Host Machine: dcgm-exporter-supervisor                                            |
 |                                                                                   |
 |  +-----------------------------------------------------------------------------+  |
-|  | HTTP Server (gorilla/mux + exporter-toolkit/web)                            |  |
+|  | HTTP Server (TCP/IP on :9400, exporter-toolkit/web)                         |  |
 |  |  - /metrics: Aggregates & enriches metrics from all instances with VM labels|  |
 |  |  - /targets: Prometheus HTTP Service Discovery (http_sd_configs)            |  |
 |  |  - /probe?target=vm1: Multi-target scrape endpoint                          |  |
 |  |  - /health: Supervisor & child instance health status                       |  |
 |  +-------------------------------------+---------------------------------------+  |
 |                                        |                                          |
-|  +---------------------------+         | Scrapes internal                         |
-|  | Target Discovery Manager  |         | loopback ports                           |
+|  +---------------------------+         | Concurrently scrapes                     |
+|  | Target Discovery Manager  |         | UNIX domain sockets                      |
 |  |  - Libvirt/KVM (Default)  |         v                                          |
 |  |  - OpenStack Nova API     |   +-------------------+  +-------------------+     |
 |  |  - Static Config (YAML)   |   | dcgm-exporter #1  |  | dcgm-exporter #2  | ... |
-|  |  - File Watcher Provider  |   | (127.0.0.1:9401)  |  | (127.0.0.1:9402)  |     |
+|  |  - File Watcher Provider  |   | (vm1.sock - FD 3) |  | (vm2.sock - FD 3) |     |
 |  +-------------+-------------+   +---------+---------+  +---------+---------+     |
 |                |                           |                      |               |
 |                v                           |                      |               |
 |  +---------------------------+             |                      |               |
 |  | Process Lifecycle Manager |             |                      |               |
-|  |  - Port Allocation Pool   |             |                      |               |
+|  |  - Socket Activation (FD3)|             |                      |               |
 |  |  - Process Supervision    |             |                      |               |
 |  |  - Crash Backoff Restart  |             |                      |               |
 |  +---------------------------+             |                      |               |
@@ -166,8 +166,7 @@ log_format: "text"
 
 exporter:
   binary_path: "/usr/bin/dcgm-exporter"
-  port_range_start: 9401
-  port_range_end: 9500
+  socket_dir: "/run/dcgm-exporter-supervisor"
 
 discovery:
   static:
@@ -203,9 +202,7 @@ discovery:
 | `-c, --collect-interval` | `DCGM_SUPERVISOR_INTERVAL` | `30000` | Child collection interval (ms) |
 | `-f, --collectors` | `DCGM_SUPERVISOR_COLLECTORS` | `/etc/dcgm-exporter/default-counters.csv` | DCGM fields CSV counters file |
 | `--dcgm-exporter-bin` | `DCGM_EXPORTER_BINARY` | `"dcgm-exporter"` | Path or command for dcgm-exporter binary |
-| `--exporter-listen-host` | `DCGM_SUPERVISOR_EXPORTER_LISTEN_HOST` | `"127.0.0.1"` | Host address for loopback child instances (e.g. `"127.0.0.1"` or `"::1"`) |
-| `--port-range-start` | `DCGM_SUPERVISOR_PORT_RANGE_START` | `9401` | Start of loopback port allocation range |
-| `--port-range-end` | `DCGM_SUPERVISOR_PORT_RANGE_END` | `9500` | End of loopback port allocation range |
+| `--socket-dir` | `DCGM_SUPERVISOR_SOCKET_DIR` | `"/run/dcgm-exporter-supervisor"` | Directory for internal child UNIX domain sockets |
 | `--web-config-file` | `DCGM_SUPERVISOR_WEB_CONFIG_FILE` | `""` | Exporter-toolkit web config for TLS/auth |
 | `--log-format` | `DCGM_SUPERVISOR_LOG_FORMAT` | `"text"` | Log format (`text` or `json`) |
 | `--debug` | `DCGM_SUPERVISOR_DEBUG` | `false` | Enable verbose debug logging |

@@ -156,4 +156,3 @@ func TestFormatHostPort(t *testing.T) {
 		t.Errorf("FormatHostPort Bracketed IPv6 unexpected: %s", got)
 	}
 }
-

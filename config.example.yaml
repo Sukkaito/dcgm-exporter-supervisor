@@ -32,13 +32,10 @@ exporter:
   # Path or name of the dcgm-exporter executable.
   binary_path: "dcgm-exporter"
 
-  # Host address that child dcgm-exporter instances bind to.
-  # Defaults to "127.0.0.1" (IPv4 localhost). Set to "::1" or "[::1]" for IPv6 localhost.
-  listen_host: "127.0.0.1"
-
-  # Port range to allocate for local loopback instances.
-  port_range_start: 9401
-  port_range_end: 9500
+  # Directory where internal UNIX domain sockets are created for child dcgm-exporter processes.
+  # Using UNIX domain sockets eliminates the need for TCP port allocation entirely.
+  # Defaults to "/run/dcgm-exporter-supervisor" (falls back to "/tmp/dcgm-exporter-supervisor" if not writable).
+  socket_dir: "/run/dcgm-exporter-supervisor"
 
   # Timeout to wait after sending SIGTERM before escalating to SIGKILL.
   shutdown_timeout: 5s

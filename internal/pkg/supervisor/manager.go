@@ -22,17 +22,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/allocator"
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/appconfig"
 )
 
 // ScrapeResult encapsulates the outcome of scraping a child exporter instance.
 type ScrapeResult struct {
-	Target  appconfig.Target
-	Port    int
-	Data    []byte
-	Error   error
-	Elapsed time.Duration
+	Target     appconfig.Target
+	SocketPath string
+	Port       int
+	Data       []byte
+	Error      error
+	Elapsed    time.Duration
 }
 
 // Manager supervises the set of child dcgm-exporter instances.
@@ -41,19 +41,20 @@ type Manager struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	config     appconfig.ExporterConfig
-	allocator  *allocator.PortAllocator
 	instances  map[string]*Instance
 	cmdBuilder CommandBuilder
 }
 
 // NewManager creates a new supervisor Manager.
-func NewManager(cfg appconfig.ExporterConfig, alloc *allocator.PortAllocator, builder CommandBuilder) *Manager {
+func NewManager(cfg appconfig.ExporterConfig, builder CommandBuilder) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
+	if cfg.SocketDir == "" {
+		cfg.SocketDir = appconfig.DefaultSocketDir
+	}
 	return &Manager{
 		ctx:        ctx,
 		cancel:     cancel,
 		config:     cfg,
-		allocator:  alloc,
 		instances:  make(map[string]*Instance),
 		cmdBuilder: builder,
 	}
@@ -78,7 +79,6 @@ func (m *Manager) Reconcile(desired []appconfig.Target) {
 		if _, exists := desiredMap[id]; !exists {
 			slog.Info("Removing instance for target", slog.String("target", inst.Target.Name), slog.String("id", id))
 			inst.Stop()
-			m.allocator.Release(id)
 			delete(m.instances, id)
 		}
 	}
@@ -87,15 +87,7 @@ func (m *Manager) Reconcile(desired []appconfig.Target) {
 	for id, t := range desiredMap {
 		existing, exists := m.instances[id]
 		if !exists {
-			port, err := m.allocator.Allocate(id)
-			if err != nil {
-				slog.Error("Failed to allocate port for target",
-					slog.String("target", t.Name),
-					slog.String("error", err.Error()))
-				continue
-			}
-
-			inst := NewInstance(t, port, m.config, m.cmdBuilder)
+			inst := NewInstance(t, "", m.config, m.cmdBuilder)
 			m.instances[id] = inst
 			inst.Start(m.ctx)
 			continue
@@ -192,11 +184,12 @@ func (m *Manager) ScrapeAll(ctx context.Context) []ScrapeResult {
 			start := time.Now()
 			data, err := targetInst.Scrape(ctx)
 			results[idx] = ScrapeResult{
-				Target:  targetInst.Target,
-				Port:    targetInst.Port,
-				Data:    data,
-				Error:   err,
-				Elapsed: time.Since(start),
+				Target:     targetInst.Target,
+				SocketPath: targetInst.SocketPath,
+				Port:       targetInst.Port,
+				Data:       data,
+				Error:      err,
+				Elapsed:    time.Since(start),
 			}
 		}(i, inst)
 	}

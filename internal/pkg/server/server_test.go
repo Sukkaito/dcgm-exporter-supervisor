@@ -19,46 +19,59 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"net"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
-	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/allocator"
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/appconfig"
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/supervisor"
 )
+
+type mockRoundTripper struct {
+	handler func(req *http.Request) (*http.Response, error)
+}
+
+func (m *mockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return m.handler(req)
+}
 
 func mockCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
 	return exec.CommandContext(ctx, "sleep", "1")
 }
 
 func TestServerEndpoints(t *testing.T) {
-	// Spin up a mock dcgm-exporter child HTTP server
-	mockChild := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/metrics":
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("DCGM_FI_DEV_GPU_TEMP{gpu=\"0\"} 45\n"))
-		case "/health":
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("OK"))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer mockChild.Close()
+	mockTransport := &mockRoundTripper{
+		handler: func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Path {
+			case "/metrics":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader("DCGM_FI_DEV_GPU_TEMP{gpu=\"0\"} 45\n")),
+					Header:     make(http.Header),
+				}, nil
+			case "/health":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader("OK")),
+					Header:     make(http.Header),
+				}, nil
+			default:
+				return &http.Response{
+					StatusCode: http.StatusNotFound,
+					Body:       io.NopCloser(strings.NewReader("404 Not Found")),
+					Header:     make(http.Header),
+				}, nil
+			}
+		},
+	}
 
-	_, portStr, _ := net.SplitHostPort(mockChild.Listener.Addr().String())
-	childPort, _ := strconv.Atoi(portStr)
-
-	alloc, _ := allocator.NewPortAllocator(9401, 9410)
 	cfg := appconfig.NewDefaultConfig()
+	cfg.Exporter.SocketDir = t.TempDir()
 
-	mgr := supervisor.NewManager(cfg.Exporter, alloc, mockCommand)
+	mgr := supervisor.NewManager(cfg.Exporter, mockCommand)
 	defer mgr.Shutdown()
 
 	target := appconfig.Target{
@@ -73,7 +86,7 @@ func TestServerEndpoints(t *testing.T) {
 	// Add instance to manager via reconcile
 	mgr.Reconcile([]appconfig.Target{target})
 	if actualInst, ok := mgr.GetInstance("vm-worker-1"); ok {
-		actualInst.Port = childPort // point to mock HTTP server
+		actualInst.SetHTTPClient(&http.Client{Transport: mockTransport})
 	}
 
 	srv := NewServer(cfg, mgr)
@@ -117,13 +130,19 @@ func TestServerEndpoints(t *testing.T) {
 		if targets[0].Labels["vm_name"] != "vm-worker-1" {
 			t.Fatalf("expected vm_name=vm-worker-1, got %v", targets[0].Labels)
 		}
+		if targets[0].Labels["__param_target"] != "vm-worker-1" {
+			t.Fatalf("expected __param_target=vm-worker-1, got %v", targets[0].Labels)
+		}
+		if targets[0].Labels["__metrics_path__"] != "/probe" {
+			t.Fatalf("expected __metrics_path__=/probe, got %v", targets[0].Labels)
+		}
 	})
 
 	t.Run("GET /targets with IPv6 listen host", func(t *testing.T) {
 		cfgIPv6 := appconfig.NewDefaultConfig()
-		cfgIPv6.Exporter.ListenHost = "::1"
-		allocIPv6, _ := allocator.NewPortAllocator(9601, 9610)
-		mgrIPv6 := supervisor.NewManager(cfgIPv6.Exporter, allocIPv6, mockCommand)
+		cfgIPv6.Address = "[::]:9400"
+		cfgIPv6.Exporter.SocketDir = t.TempDir()
+		mgrIPv6 := supervisor.NewManager(cfgIPv6.Exporter, mockCommand)
 		defer mgrIPv6.Shutdown()
 
 		targetIPv6 := appconfig.Target{
@@ -145,8 +164,11 @@ func TestServerEndpoints(t *testing.T) {
 		if len(targets) != 1 {
 			t.Fatalf("expected 1 target, got %d", len(targets))
 		}
-		if !strings.HasPrefix(targets[0].Targets[0], "[::1]:") {
-			t.Fatalf("expected bracketed IPv6 target [::1]:<port>, got %s", targets[0].Targets[0])
+		if targets[0].Targets[0] != "[::]:9400" {
+			t.Fatalf("expected bracketed IPv6 target [::]:9400, got %s", targets[0].Targets[0])
+		}
+		if targets[0].Labels["__param_target"] != "vm-worker-ipv6" {
+			t.Fatalf("expected __param_target=vm-worker-ipv6, got %v", targets[0].Labels)
 		}
 	})
 
