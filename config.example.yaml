@@ -1,0 +1,102 @@
+# ==============================================================================
+# DCGM Exporter Supervisor - Example Configuration File
+# ==============================================================================
+
+# Listen address for the supervisor HTTP server.
+address: ":9400"
+
+# Default interval (in milliseconds) at which child dcgm-exporter instances collect metrics.
+collect_interval: 30000
+
+# Default path to the DCGM fields counters CSV file.
+collectors_file: "/etc/dcgm-exporter/default-counters.csv"
+
+# Log output format: "text" or "json".
+log_format: "text"
+
+# Enable debug logging.
+debug: false
+
+# Exporter-toolkit web configuration file for TLS and Basic Authentication (optional).
+# web_config_file: "/etc/dcgm-exporter-supervisor/web-config.yaml"
+
+# Maximum duration for reading HTTP requests and writing responses.
+web_read_timeout: 10s
+web_write_timeout: 30s
+
+# ------------------------------------------------------------------------------
+# Child Exporter Process Options
+# ------------------------------------------------------------------------------
+exporter:
+  # Path or name of the dcgm-exporter executable.
+  binary_path: "dcgm-exporter"
+
+  # Port range to allocate for local loopback instances.
+  port_range_start: 9401
+  port_range_end: 9500
+
+  # Timeout to wait after sending SIGTERM before escalating to SIGKILL.
+  shutdown_timeout: 5s
+
+  # Optional global extra arguments to pass to all child dcgm-exporter instances.
+  extra_args:
+    - "--replace-blanks-in-model-name"
+
+# ------------------------------------------------------------------------------
+# Discovery Providers Configuration
+# ------------------------------------------------------------------------------
+discovery:
+  # 1. Static targets explicitly defined in this file
+  static:
+    enabled: true
+    targets:
+      - name: "vm-ai-01"
+        endpoint: "vsock://3:5555" # Or tcp://192.168.122.10:5555
+        labels:
+          vm_name: "vm-ai-01"
+          cluster: "training-prod"
+          environment: "production"
+
+      - name: "vm-ai-02"
+        endpoint: "tcp://192.168.122.11:5555"
+        labels:
+          vm_name: "vm-ai-02"
+          cluster: "inference"
+          environment: "production"
+
+  # 2. Dynamic Libvirt/KVM domain discovery
+  libvirt:
+    # Set to true on KVM hypervisor hosts running libvirtd
+    enabled: true
+    uri: "qemu:///system"
+    poll_interval: 15s
+
+    # Connection mode: "auto" (tries vsock first, then IP), "vsock", or "ip"
+    connection_mode: "auto"
+    default_port: 5555
+
+    # When true, only domains with assigned GPU PCI passthrough or vGPU devices are monitored.
+    filter_gpu_only: true
+
+  # 3. OpenStack Nova compute API discovery
+  nova:
+    enabled: false
+    auth_url: "http://keystone.example.com:5000/v3"
+    username: "admin"
+    password: "secretpassword"
+    project_name: "service"
+    user_domain_name: "Default"
+    project_domain_name: "Default"
+    nova_endpoint: "http://nova.example.com:8774/v2.1"
+    hypervisor_hostname: "hypervisor01.example.com"
+    poll_interval: 30s
+    default_port: 5555
+    connection_mode: "ip"
+    filter_gpu_only: true
+
+  # 4. Dynamic File/Directory Watcher
+  file:
+    enabled: false
+    directory: "/etc/dcgm-exporter-supervisor/targets.d"
+    poll_interval: 15s
+

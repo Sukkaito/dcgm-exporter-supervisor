@@ -1,0 +1,22 @@
+[Unit]
+Description=DCGM Exporter Supervisor
+Documentation=https://github.com/Sukkaito/dcgm-exporter-supervisor
+After=network-online.target libvirtd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/dcgm-exporter-supervisor --config-file=/etc/dcgm-exporter-supervisor/config.yaml
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+
+# Security sandbox options
+ProtectSystem=full
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target
+
