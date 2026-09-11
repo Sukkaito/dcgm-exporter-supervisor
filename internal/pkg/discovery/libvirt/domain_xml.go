@@ -27,8 +27,8 @@ type DomainXML struct {
 	Name    string   `xml:"name"`
 	UUID    string   `xml:"uuid"`
 	Devices struct {
-		Hostdevs []Hostdev `xml:"hostdev"`
-		Vsock    *Vsock    `xml:"vsock"`
+		Hostdevs   []Hostdev `xml:"hostdev"`
+		Vsock      *Vsock    `xml:"vsock"`
 		Interfaces []struct {
 			MAC struct {
 				Address string `xml:"address,attr"`
@@ -75,4 +75,3 @@ func (d *DomainXML) GetVsockCID() string {
 	}
 	return ""
 }
-

@@ -32,6 +32,7 @@ debug: true
 
 exporter:
   binary_path: "/usr/local/bin/dcgm-exporter"
+  listen_host: "::1"
   collectors_file: "/etc/dcgm-exporter/dcp-metrics.csv"
   port_range_start: 9500
   port_range_end: 9600
@@ -48,19 +49,21 @@ discovery:
         labels:
           cluster: "training"
       - name: "vm-ai-02"
-        endpoint: "tcp://192.168.100.2:5555"
+        endpoint: "tcp://[2001:db8::2]:5555"
 
   libvirt:
     enabled: true
     uri: "qemu:///system"
     poll_interval: 20s
     connection_mode: "auto"
+    ip_version: "ipv6"
     filter_gpu_only: true
 
   nova:
     enabled: true
     nova_endpoint: "http://nova.example.com:8774/v2.1"
     hypervisor_hostname: "node01"
+    ip_version: "ipv6"
 `
 
 	tmpDir := t.TempDir()
@@ -90,6 +93,9 @@ discovery:
 	if cfg.Exporter.BinaryPath != "/usr/local/bin/dcgm-exporter" {
 		t.Errorf("expected binary_path /usr/local/bin/dcgm-exporter, got %s", cfg.Exporter.BinaryPath)
 	}
+	if cfg.Exporter.ListenHost != "::1" {
+		t.Errorf("expected listen_host ::1, got %s", cfg.Exporter.ListenHost)
+	}
 	if cfg.Exporter.PortRangeStart != 9500 || cfg.Exporter.PortRangeEnd != 9600 {
 		t.Errorf("expected port range 9500-9600, got %d-%d", cfg.Exporter.PortRangeStart, cfg.Exporter.PortRangeEnd)
 	}
@@ -109,13 +115,12 @@ discovery:
 	}
 
 	// Libvirt
-	if !cfg.Discovery.Libvirt.Enabled || cfg.Discovery.Libvirt.PollInterval != 20*time.Second {
+	if !cfg.Discovery.Libvirt.Enabled || cfg.Discovery.Libvirt.PollInterval != 20*time.Second || cfg.Discovery.Libvirt.IPVersion != "ipv6" {
 		t.Errorf("unexpected Libvirt config: %+v", cfg.Discovery.Libvirt)
 	}
 
 	// Nova
-	if !cfg.Discovery.Nova.Enabled || cfg.Discovery.Nova.HypervisorHostname != "node01" {
+	if !cfg.Discovery.Nova.Enabled || cfg.Discovery.Nova.HypervisorHostname != "node01" || cfg.Discovery.Nova.IPVersion != "ipv6" {
 		t.Errorf("unexpected Nova config: %+v", cfg.Discovery.Nova)
 	}
 }
-

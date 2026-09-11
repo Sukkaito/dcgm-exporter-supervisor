@@ -50,4 +50,3 @@ func (p *Provider) Run(ctx context.Context, ch chan<- []appconfig.Target) error 
 	<-ctx.Done()
 	return ctx.Err()
 }
-

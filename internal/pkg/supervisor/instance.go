@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/appconfig"
+	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/netutil"
 )
 
 // InstanceState represents the lifecycle status of a child exporter instance.
@@ -53,20 +54,20 @@ func defaultCommandBuilder(ctx context.Context, name string, args ...string) *ex
 
 // Instance manages a single child dcgm-exporter process.
 type Instance struct {
-	mu             sync.RWMutex
-	Target         appconfig.Target
-	Port           int
-	Config         appconfig.ExporterConfig
-	cmdBuilder     CommandBuilder
-	httpClient     *http.Client
+	mu         sync.RWMutex
+	Target     appconfig.Target
+	Port       int
+	Config     appconfig.ExporterConfig
+	cmdBuilder CommandBuilder
+	httpClient *http.Client
 
-	state          InstanceState
-	pid            int
-	startTime      time.Time
-	restartCount   int
-	lastError      error
-	cancelFunc     context.CancelFunc
-	stoppedCh      chan struct{}
+	state        InstanceState
+	pid          int
+	startTime    time.Time
+	restartCount int
+	lastError    error
+	cancelFunc   context.CancelFunc
+	stoppedCh    chan struct{}
 }
 
 // NewInstance creates a new Instance configuration.
@@ -76,6 +77,12 @@ func NewInstance(target appconfig.Target, port int, cfg appconfig.ExporterConfig
 	}
 	if cfg.ShutdownTimeout <= 0 {
 		cfg.ShutdownTimeout = appconfig.DefaultShutdownTimeout
+	}
+	if cfg.ListenHost == "" {
+		cfg.ListenHost = appconfig.DefaultExporterListenHost
+	}
+	if normalized, err := netutil.NormalizeEndpoint(target.Endpoint, 5555); err == nil {
+		target.Endpoint = normalized
 	}
 	return &Instance{
 		Target:     target,
@@ -149,7 +156,7 @@ func (inst *Instance) runLoop(ctx context.Context) {
 func (inst *Instance) execProcess(ctx context.Context) error {
 	args := []string{
 		"-r", inst.Target.Endpoint,
-		"-a", fmt.Sprintf("127.0.0.1:%d", inst.Port),
+		"-a", netutil.FormatHostPort(inst.Config.ListenHost, inst.Port),
 	}
 
 	if inst.Config.CollectorsFile != "" {
@@ -272,7 +279,7 @@ func (inst *Instance) State() InstanceState {
 
 // CheckHealth probes the instance /health endpoint.
 func (inst *Instance) CheckHealth(ctx context.Context) error {
-	url := fmt.Sprintf("http://127.0.0.1:%d/health", inst.Port)
+	url := netutil.FormatHTTPURL("http", inst.Config.ListenHost, inst.Port, "/health")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -296,7 +303,7 @@ func (inst *Instance) CheckHealth(ctx context.Context) error {
 
 // Scrape fetches the /metrics endpoint from this instance.
 func (inst *Instance) Scrape(ctx context.Context) ([]byte, error) {
-	url := fmt.Sprintf("http://127.0.0.1:%d/metrics", inst.Port)
+	url := netutil.FormatHTTPURL("http", inst.Config.ListenHost, inst.Port, "/metrics")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -314,4 +321,3 @@ func (inst *Instance) Scrape(ctx context.Context) ([]byte, error) {
 
 	return io.ReadAll(resp.Body)
 }
-

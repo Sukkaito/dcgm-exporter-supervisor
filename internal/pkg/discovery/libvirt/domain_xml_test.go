@@ -70,4 +70,3 @@ func TestParseDomainXML(t *testing.T) {
 		t.Errorf("expected HasGPU to be false for non-GPU domain")
 	}
 }
-

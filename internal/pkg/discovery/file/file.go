@@ -147,4 +147,3 @@ func parseTargetFile(path string) ([]appconfig.Target, error) {
 
 	return nil, fmt.Errorf("file does not contain valid target or target list")
 }
-

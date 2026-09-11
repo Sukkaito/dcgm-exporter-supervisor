@@ -3,6 +3,7 @@
 # ==============================================================================
 
 # Listen address for the supervisor HTTP server.
+# For IPv6, use bracket notation, e.g. "[::]:9400" or "[::1]:9400".
 address: ":9400"
 
 # Default interval (in milliseconds) at which child dcgm-exporter instances collect metrics.
@@ -30,6 +31,10 @@ web_write_timeout: 30s
 exporter:
   # Path or name of the dcgm-exporter executable.
   binary_path: "dcgm-exporter"
+
+  # Host address that child dcgm-exporter instances bind to.
+  # Defaults to "127.0.0.1" (IPv4 localhost). Set to "::1" or "[::1]" for IPv6 localhost.
+  listen_host: "127.0.0.1"
 
   # Port range to allocate for local loopback instances.
   port_range_start: 9401
@@ -64,6 +69,18 @@ discovery:
           cluster: "inference"
           environment: "production"
 
+      # IPv6 Global Unicast target example
+      - name: "vm-ai-ipv6"
+        endpoint: "tcp://[2001:db8::10]:5555"
+        labels:
+          vm_name: "vm-ai-ipv6"
+
+      # IPv6 Link-Local Address (LLA) with interface scope example
+      - name: "vm-ai-lla"
+        endpoint: "tcp://[fe80::5054:ff:fe12:3456%vnet0]:5555"
+        labels:
+          vm_name: "vm-ai-lla"
+
   # 2. Dynamic Libvirt/KVM domain discovery
   libvirt:
     # Set to true on KVM hypervisor hosts running libvirtd
@@ -73,6 +90,11 @@ discovery:
 
     # Connection mode: "auto" (tries vsock first, then IP), "vsock", or "ip"
     connection_mode: "auto"
+
+    # IP version to select when connection_mode is "ip" or "auto" fallback:
+    # "ipv4" (default, prefers IPv4), "ipv6" (prefers IPv6), or "auto"
+    ip_version: "ipv4"
+
     default_port: 5555
 
     # When true, only domains with assigned GPU PCI passthrough or vGPU devices are monitored.
@@ -92,6 +114,10 @@ discovery:
     poll_interval: 30s
     default_port: 5555
     connection_mode: "ip"
+
+    # IP version to select: "ipv4" (default), "ipv6", or "auto"
+    ip_version: "ipv4"
+
     filter_gpu_only: true
 
   # 4. Dynamic File/Directory Watcher
@@ -99,4 +125,3 @@ discovery:
     enabled: false
     directory: "/etc/dcgm-exporter-supervisor/targets.d"
     poll_interval: 15s
-

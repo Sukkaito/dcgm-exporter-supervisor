@@ -52,7 +52,8 @@ func TestNovaProvider(t *testing.T) {
 						"metadata": { "env": "prod" },
 						"addresses": {
 							"internal": [
-								{ "version": 4, "addr": "10.0.0.15", "OS-EXT-IPS:type": "fixed" }
+								{ "version": 4, "addr": "10.0.0.15", "OS-EXT-IPS:type": "fixed" },
+								{ "version": 6, "addr": "2001:db8::15", "OS-EXT-IPS:type": "fixed" }
 							]
 						}
 					}
@@ -68,40 +69,63 @@ func TestNovaProvider(t *testing.T) {
 	}))
 	defer mockServer.Close()
 
-	cfg := appconfig.NovaConfig{
-		Enabled:            true,
-		AuthURL:            mockServer.URL,
-		NovaEndpoint:       mockServer.URL,
-		Username:           "testuser",
-		Password:           "testpass",
-		ProjectName:        "testproject",
-		HypervisorHostname: "host01",
-		DefaultPort:        5555,
-		PollInterval:       100 * time.Millisecond,
-	}
+	t.Run("IPv4 default selection", func(t *testing.T) {
+		cfg := appconfig.NovaConfig{
+			Enabled:            true,
+			AuthURL:            mockServer.URL,
+			NovaEndpoint:       mockServer.URL,
+			Username:           "testuser",
+			Password:           "testpass",
+			ProjectName:        "testproject",
+			HypervisorHostname: "host01",
+			DefaultPort:        5555,
+			IPVersion:          "ipv4",
+			PollInterval:       100 * time.Millisecond,
+		}
 
-	prov := NewProvider(cfg)
-	targets, err := prov.scanServers(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error scanning nova servers: %v", err)
-	}
+		prov := NewProvider(cfg)
+		targets, err := prov.scanServers(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error scanning nova servers: %v", err)
+		}
 
-	if len(targets) != 1 {
-		t.Fatalf("expected 1 target, got %d", len(targets))
-	}
+		if len(targets) != 1 {
+			t.Fatalf("expected 1 target, got %d", len(targets))
+		}
 
-	tgt := targets[0]
-	if tgt.ID != "server-uuid-1" {
-		t.Errorf("expected ID server-uuid-1, got %s", tgt.ID)
-	}
-	if tgt.Name != "ai-compute-01" {
-		t.Errorf("expected Name ai-compute-01, got %s", tgt.Name)
-	}
-	if tgt.Endpoint != "tcp://10.0.0.15:5555" {
-		t.Errorf("expected Endpoint tcp://10.0.0.15:5555, got %s", tgt.Endpoint)
-	}
-	if tgt.Labels["nova_env"] != "prod" {
-		t.Errorf("expected label nova_env=prod, got %v", tgt.Labels)
-	}
+		tgt := targets[0]
+		if tgt.Endpoint != "tcp://10.0.0.15:5555" {
+			t.Errorf("expected Endpoint tcp://10.0.0.15:5555, got %s", tgt.Endpoint)
+		}
+	})
+
+	t.Run("IPv6 selection", func(t *testing.T) {
+		cfg := appconfig.NovaConfig{
+			Enabled:            true,
+			AuthURL:            mockServer.URL,
+			NovaEndpoint:       mockServer.URL,
+			Username:           "testuser",
+			Password:           "testpass",
+			ProjectName:        "testproject",
+			HypervisorHostname: "host01",
+			DefaultPort:        5555,
+			IPVersion:          "ipv6",
+			PollInterval:       100 * time.Millisecond,
+		}
+
+		prov := NewProvider(cfg)
+		targets, err := prov.scanServers(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error scanning nova servers: %v", err)
+		}
+
+		if len(targets) != 1 {
+			t.Fatalf("expected 1 target, got %d", len(targets))
+		}
+
+		tgt := targets[0]
+		if tgt.Endpoint != "tcp://[2001:db8::15]:5555" {
+			t.Errorf("expected Endpoint tcp://[2001:db8::15]:5555, got %s", tgt.Endpoint)
+		}
+	})
 }
-

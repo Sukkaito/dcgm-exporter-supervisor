@@ -81,10 +81,22 @@ However, NVIDIA's `dcgm-exporter` (via `go-dcgm` and `libdcgm.so`) only supports
 ### 2. Protocol-Agnostic Host Engine Connections
 Supports all DCGM remote connection formats:
 - `vsock://<CID>:<PORT>` (e.g. `vsock://3:5555` - direct kernel VM socket, zero network overhead)
-- `tcp://<IP>:<PORT>` (e.g. `tcp://192.168.122.10:5555`)
+- `tcp://<IPv4>:<PORT>` (e.g. `tcp://192.168.122.10:5555`)
+- `tcp://[<IPv6>]:<PORT>` (e.g. `tcp://[2001:db8::10]:5555` - Global Unicast IPv6)
+- `tcp://[<IPv6>%<iface>]:<PORT>` (e.g. `tcp://[fe80::5054:ff:fe12:3456%vnet0]:5555` - Scoped Link-Local IPv6)
 - `unix:///<PATH>` (e.g. `unix:///var/run/hostengine.sock`)
 
-### 3. Prometheus Scrape Methods
+### 3. Comprehensive IPv6 Support
+`dcgm-exporter-supervisor` follows NVIDIA `dcgm-exporter`'s IPv6 rules:
+- **Bracket Notation**: All IPv6 host engine addresses with a port must use bracket notation (e.g. `[2001:db8::1]:5555` or `tcp://[2001:db8::1]:5555`). The supervisor automatically normalizes and validates brackets.
+- **Link-Local Addresses (LLA) with Interface Scope**: Fully supported! When Libvirt discovers guest IPv6 link-local addresses (`fe80::/10`), it automatically appends the host's virtual interface name (e.g., `%vnet0`), producing `tcp://[fe80::5054:ff:fe12:3456%vnet0]:5555`.
+- **Configurable Child Exporter Bind Host**: Child exporter instances bind to IPv4 localhost (`127.0.0.1`) by default, and can be switched to IPv6 localhost (`::1` or `[::1]`) via `--exporter-listen-host` or `exporter.listen_host`.
+- **Configurable Discovery Preference**: Discovery providers (Libvirt and Nova) support `ip_version`:
+  - `"ipv4"` (default): Discovers and prefers IPv4 addresses.
+  - `"ipv6"`: Discovers IPv6 addresses (prefers global unicast, falls back to scoped LLA).
+  - `"auto"`: Prioritizes IPv4, falling back to global IPv6 and scoped LLA IPv6.
+
+### 4. Prometheus Scrape Methods
 
 #### Method A: Unified Scrape (`GET /metrics`)
 Prometheus scrapes a single endpoint on the supervisor. The supervisor fans out requests across all running instances concurrently, rewrites each metric line to inject `vm_name="<name>"`, `target_id="<id>"`, and custom labels, and streams the merged output.
@@ -187,10 +199,11 @@ discovery:
 | Flag | Env Var | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `--config-file` | `DCGM_SUPERVISOR_CONFIG_FILE` | `""` | Path to YAML config file |
-| `-a, --address` | `DCGM_SUPERVISOR_LISTEN` | `":9400"` | Supervisor HTTP listen address |
+| `-a, --address` | `DCGM_SUPERVISOR_LISTEN` | `":9400"` | Supervisor HTTP listen address as `<HOST>:<PORT>` or `"[<IPv6>]:<PORT>"` (e.g. `"[::]:9400"`) |
 | `-c, --collect-interval` | `DCGM_SUPERVISOR_INTERVAL` | `30000` | Child collection interval (ms) |
 | `-f, --collectors` | `DCGM_SUPERVISOR_COLLECTORS` | `/etc/dcgm-exporter/default-counters.csv` | DCGM fields CSV counters file |
 | `--dcgm-exporter-bin` | `DCGM_EXPORTER_BINARY` | `"dcgm-exporter"` | Path or command for dcgm-exporter binary |
+| `--exporter-listen-host` | `DCGM_SUPERVISOR_EXPORTER_LISTEN_HOST` | `"127.0.0.1"` | Host address for loopback child instances (e.g. `"127.0.0.1"` or `"::1"`) |
 | `--port-range-start` | `DCGM_SUPERVISOR_PORT_RANGE_START` | `9401` | Start of loopback port allocation range |
 | `--port-range-end` | `DCGM_SUPERVISOR_PORT_RANGE_END` | `9500` | End of loopback port allocation range |
 | `--web-config-file` | `DCGM_SUPERVISOR_WEB_CONFIG_FILE` | `""` | Exporter-toolkit web config for TLS/auth |

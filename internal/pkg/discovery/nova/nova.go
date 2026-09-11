@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/appconfig"
+	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/netutil"
 )
 
 // Provider discovers target VMs from the OpenStack Nova compute API.
@@ -44,6 +45,9 @@ func NewProvider(cfg appconfig.NovaConfig) *Provider {
 	}
 	if cfg.DefaultPort <= 0 {
 		cfg.DefaultPort = appconfig.DefaultHostEnginePort
+	}
+	if cfg.IPVersion == "" {
+		cfg.IPVersion = "ipv4"
 	}
 	return &Provider{
 		cfg: cfg,
@@ -93,9 +97,9 @@ func (p *Provider) Run(ctx context.Context, ch chan<- []appconfig.Target) error 
 
 type novaServerListResponse struct {
 	Servers []struct {
-		ID        string                         `json:"id"`
-		Name      string                         `json:"name"`
-		Status    string                         `json:"status"`
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		Status    string `json:"status"`
 		Addresses map[string][]struct {
 			Version int    `json:"version"`
 			Addr    string `json:"addr"`
@@ -146,8 +150,13 @@ func (p *Provider) scanServers(ctx context.Context) ([]appconfig.Target, error) 
 
 	var targets []appconfig.Target
 	for _, s := range data.Servers {
-		ip := extractFirstIPv4(s.Addresses)
+		ip := extractIP(s.Addresses, p.cfg.IPVersion)
 		if ip == "" {
+			continue
+		}
+
+		endpoint, err := netutil.NormalizeEndpoint("tcp://"+ip, p.cfg.DefaultPort)
+		if err != nil {
 			continue
 		}
 
@@ -163,7 +172,7 @@ func (p *Provider) scanServers(ctx context.Context) ([]appconfig.Target, error) 
 		targets = append(targets, appconfig.Target{
 			ID:       s.ID,
 			Name:     s.Name,
-			Endpoint: fmt.Sprintf("tcp://%s:%d", ip, p.cfg.DefaultPort),
+			Endpoint: endpoint,
 			Labels:   labels,
 		})
 	}
@@ -171,19 +180,57 @@ func (p *Provider) scanServers(ctx context.Context) ([]appconfig.Target, error) 
 	return targets, nil
 }
 
-func extractFirstIPv4(addresses map[string][]struct {
+func extractIP(addresses map[string][]struct {
 	Version int    `json:"version"`
 	Addr    string `json:"addr"`
 	Type    string `json:"OS-EXT-IPS:type"`
-}) string {
-	for _, addrs := range addresses {
-		for _, a := range addrs {
-			if a.Version == 4 && a.Addr != "" {
-				return a.Addr
+}, ipVersion string) string {
+	if ipVersion == "" {
+		ipVersion = "ipv4"
+	}
+
+	findV4 := func() string {
+		for _, addrs := range addresses {
+			for _, a := range addrs {
+				if a.Version == 4 && a.Addr != "" {
+					return a.Addr
+				}
 			}
 		}
+		return ""
 	}
-	return ""
+
+	findV6 := func() string {
+		// Prefer global unicast IPv6 first
+		for _, addrs := range addresses {
+			for _, a := range addrs {
+				if (a.Version == 6 || netutil.IsIPv6(a.Addr)) && !netutil.IsLinkLocal(a.Addr) && a.Addr != "" {
+					return a.Addr
+				}
+			}
+		}
+		// Fallback to link-local if present
+		for _, addrs := range addresses {
+			for _, a := range addrs {
+				if (a.Version == 6 || netutil.IsIPv6(a.Addr)) && a.Addr != "" {
+					return a.Addr
+				}
+			}
+		}
+		return ""
+	}
+
+	switch ipVersion {
+	case "ipv6":
+		return findV6()
+	case "auto":
+		if ip := findV4(); ip != "" {
+			return ip
+		}
+		return findV6()
+	default: // "ipv4"
+		return findV4()
+	}
 }
 
 func (p *Provider) getToken(ctx context.Context) (string, error) {
@@ -261,4 +308,3 @@ func (p *Provider) getToken(ctx context.Context) (string, error) {
 	p.tokenExp = time.Now().Add(2 * time.Hour)
 	return token, nil
 }
-

@@ -39,6 +39,7 @@ const (
 	DefaultNovaPollInterval    = 30 * time.Second
 	DefaultFilePollInterval    = 15 * time.Second
 	DefaultHostEnginePort      = 5555
+	DefaultExporterListenHost  = "127.0.0.1"
 )
 
 // Target represents a discovered or statically defined target VM / hostengine.
@@ -62,6 +63,7 @@ type LibvirtConfig struct {
 	URI            string        `yaml:"uri"`             // e.g. qemu:///system
 	PollInterval   time.Duration `yaml:"poll_interval"`   // interval between domain scans
 	ConnectionMode string        `yaml:"connection_mode"` // "auto", "vsock", "ip"
+	IPVersion      string        `yaml:"ip_version"`      // "ipv4", "ipv6", "auto" (default: "ipv4")
 	DefaultPort    int           `yaml:"default_port"`    // default 5555
 	FilterGPUOnly  bool          `yaml:"filter_gpu_only"` // only discover VMs with GPU passthrough / vGPU
 }
@@ -78,6 +80,7 @@ type NovaConfig struct {
 	NovaEndpoint       string        `yaml:"nova_endpoint"`
 	HypervisorHostname string        `yaml:"hypervisor_hostname"` // discover VMs on this hypervisor
 	PollInterval       time.Duration `yaml:"poll_interval"`
+	IPVersion          string        `yaml:"ip_version"` // "ipv4", "ipv6", "auto" (default: "ipv4")
 	DefaultPort        int           `yaml:"default_port"`
 	ConnectionMode     string        `yaml:"connection_mode"` // "ip", "vsock"
 	FilterGPUOnly      bool          `yaml:"filter_gpu_only"`
@@ -101,6 +104,7 @@ type DiscoveryConfig struct {
 // ExporterConfig configures child dcgm-exporter processes.
 type ExporterConfig struct {
 	BinaryPath      string        `yaml:"binary_path"`
+	ListenHost      string        `yaml:"listen_host"` // defaults to 127.0.0.1; can be set to ::1 or [::1]
 	CollectorsFile  string        `yaml:"collectors_file"`
 	CollectInterval int           `yaml:"collect_interval"` // ms
 	PortRangeStart  int           `yaml:"port_range_start"`
@@ -137,6 +141,7 @@ func NewDefaultConfig() *Config {
 		WebWriteTimeout: DefaultWebWriteTimeout,
 		Exporter: ExporterConfig{
 			BinaryPath:      DefaultExporterBinary,
+			ListenHost:      DefaultExporterListenHost,
 			CollectorsFile:  DefaultCollectorsFile,
 			CollectInterval: DefaultCollectInterval,
 			PortRangeStart:  DefaultPortRangeStart,
@@ -153,12 +158,14 @@ func NewDefaultConfig() *Config {
 				URI:            DefaultLibvirtURI,
 				PollInterval:   DefaultLibvirtPollInterval,
 				ConnectionMode: "auto",
+				IPVersion:      "ipv4",
 				DefaultPort:    DefaultHostEnginePort,
 				FilterGPUOnly:  true,
 			},
 			Nova: NovaConfig{
 				Enabled:        false,
 				PollInterval:   DefaultNovaPollInterval,
+				IPVersion:      "ipv4",
 				DefaultPort:    DefaultHostEnginePort,
 				ConnectionMode: "ip",
 				FilterGPUOnly:  true,
@@ -191,4 +198,3 @@ func LoadConfigFile(filePath string) (*Config, error) {
 	cfg.ConfigFile = filePath
 	return cfg, nil
 }
-

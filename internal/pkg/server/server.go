@@ -29,6 +29,7 @@ import (
 	"github.com/prometheus/exporter-toolkit/web"
 
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/appconfig"
+	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/netutil"
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/proxy"
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/supervisor"
 )
@@ -196,7 +197,7 @@ func (s *Server) handleTargets(w http.ResponseWriter, r *http.Request) {
 		labels["endpoint"] = inst.Target.Endpoint
 
 		sdTargets = append(sdTargets, HTTPSDTarget{
-			Targets: []string{fmt.Sprintf("127.0.0.1:%d", inst.Port)},
+			Targets: []string{netutil.FormatHostPort(inst.Config.ListenHost, inst.Port)},
 			Labels:  labels,
 		})
 	}
@@ -295,4 +296,3 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpSrv.Shutdown(ctx)
 }
-

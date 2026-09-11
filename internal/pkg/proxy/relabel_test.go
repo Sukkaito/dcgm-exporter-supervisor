@@ -102,4 +102,3 @@ func TestInjectLabelsEmpty(t *testing.T) {
 		t.Errorf("expected %q, got %q", input, string(out))
 	}
 }
-

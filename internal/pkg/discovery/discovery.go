@@ -146,4 +146,3 @@ func (m *Manager) CurrentTargets() []appconfig.Target {
 	}
 	return result
 }
-

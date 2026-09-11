@@ -29,11 +29,11 @@ var (
 
 // PortAllocator manages dynamic port assignments for child exporter instances.
 type PortAllocator struct {
-	mu         sync.Mutex
-	startPort  int
-	endPort    int
-	allocated  map[string]int // targetID -> port
-	usedPorts  map[int]string // port -> targetID
+	mu        sync.Mutex
+	startPort int
+	endPort   int
+	allocated map[string]int // targetID -> port
+	usedPorts map[int]string // port -> targetID
 }
 
 // NewPortAllocator creates a new allocator for the given inclusive port range.
@@ -101,4 +101,3 @@ func (p *PortAllocator) ActiveAllocations() map[string]int {
 	}
 	return res
 }
-

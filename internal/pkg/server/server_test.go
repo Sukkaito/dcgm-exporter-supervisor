@@ -119,6 +119,37 @@ func TestServerEndpoints(t *testing.T) {
 		}
 	})
 
+	t.Run("GET /targets with IPv6 listen host", func(t *testing.T) {
+		cfgIPv6 := appconfig.NewDefaultConfig()
+		cfgIPv6.Exporter.ListenHost = "::1"
+		allocIPv6, _ := allocator.NewPortAllocator(9601, 9610)
+		mgrIPv6 := supervisor.NewManager(cfgIPv6.Exporter, allocIPv6, mockCommand)
+		defer mgrIPv6.Shutdown()
+
+		targetIPv6 := appconfig.Target{
+			ID:       "vm-worker-ipv6",
+			Name:     "vm-worker-ipv6",
+			Endpoint: "tcp://[2001:db8::1]:5555",
+		}
+		mgrIPv6.Reconcile([]appconfig.Target{targetIPv6})
+
+		srvIPv6 := NewServer(cfgIPv6, mgrIPv6)
+		req := httptest.NewRequest(http.MethodGet, "/targets", nil)
+		rec := httptest.NewRecorder()
+		srvIPv6.Router().ServeHTTP(rec, req)
+
+		var targets []HTTPSDTarget
+		if err := json.Unmarshal(rec.Body.Bytes(), &targets); err != nil {
+			t.Fatalf("failed to decode JSON: %v", err)
+		}
+		if len(targets) != 1 {
+			t.Fatalf("expected 1 target, got %d", len(targets))
+		}
+		if !strings.HasPrefix(targets[0].Targets[0], "[::1]:") {
+			t.Fatalf("expected bracketed IPv6 target [::1]:<port>, got %s", targets[0].Targets[0])
+		}
+	})
+
 	t.Run("GET /probe", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/probe?target=vm-worker-1", nil)
 		rec := httptest.NewRecorder()

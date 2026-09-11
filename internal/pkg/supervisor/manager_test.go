@@ -156,4 +156,3 @@ func TestInstanceScrapeAndHealth(t *testing.T) {
 		t.Fatalf("unexpected metrics output: %s", string(metrics))
 	}
 }
-

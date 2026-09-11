@@ -60,4 +60,3 @@ func TestDiscoveryManager(t *testing.T) {
 		t.Fatalf("unexpected CurrentTargets: %v", curr)
 	}
 }
-

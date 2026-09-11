@@ -134,4 +134,3 @@ func InjectLabels(rawMetrics []byte, extraLabels map[string]string) ([]byte, err
 
 	return out.Bytes(), nil
 }
-

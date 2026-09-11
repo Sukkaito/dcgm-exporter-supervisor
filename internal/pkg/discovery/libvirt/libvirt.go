@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/appconfig"
+	"github.com/Sukkaito/dcgm-exporter-supervisor/internal/pkg/netutil"
 )
 
 // Provider discovers targets from running Libvirt/KVM domains.
@@ -44,6 +45,9 @@ func NewProvider(cfg appconfig.LibvirtConfig) *Provider {
 	}
 	if cfg.URI == "" {
 		cfg.URI = appconfig.DefaultLibvirtURI
+	}
+	if cfg.IPVersion == "" {
+		cfg.IPVersion = "ipv4"
 	}
 	return &Provider{cfg: cfg}
 }
@@ -160,16 +164,20 @@ func (p *Provider) resolveEndpoint(virshPath, domainName string, dom *DomainXML)
 	if (p.cfg.ConnectionMode == "ip" || p.cfg.ConnectionMode == "auto") && virshPath != "" {
 		addrCmd := exec.Command(virshPath, "-c", p.cfg.URI, "domifaddr", domainName, "--source", "agent")
 		if out, err := addrCmd.Output(); err == nil {
-			if ip := parseFirstIPv4(out); ip != "" {
-				return fmt.Sprintf("tcp://%s:%d", ip, p.cfg.DefaultPort)
+			if ip := parseAndSelectIP(out, p.cfg.IPVersion); ip != "" {
+				if ep, err := netutil.NormalizeEndpoint("tcp://"+ip, p.cfg.DefaultPort); err == nil {
+					return ep
+				}
 			}
 		}
 
 		// Fallback to lease source
 		addrCmdLease := exec.Command(virshPath, "-c", p.cfg.URI, "domifaddr", domainName, "--source", "lease")
 		if out, err := addrCmdLease.Output(); err == nil {
-			if ip := parseFirstIPv4(out); ip != "" {
-				return fmt.Sprintf("tcp://%s:%d", ip, p.cfg.DefaultPort)
+			if ip := parseAndSelectIP(out, p.cfg.IPVersion); ip != "" {
+				if ep, err := netutil.NormalizeEndpoint("tcp://"+ip, p.cfg.DefaultPort); err == nil {
+					return ep
+				}
 			}
 		}
 	}
@@ -177,20 +185,70 @@ func (p *Provider) resolveEndpoint(virshPath, domainName string, dom *DomainXML)
 	return ""
 }
 
-func parseFirstIPv4(out []byte) string {
+type ipEntry struct {
+	iface string
+	proto string
+	addr  string
+}
+
+func parseAndSelectIP(out []byte, ipVersion string) string {
+	if ipVersion == "" {
+		ipVersion = "ipv4"
+	}
+
+	var entries []ipEntry
 	lines := strings.Split(string(out), "\n")
 	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l == "" || strings.HasPrefix(l, "Name") || strings.HasPrefix(l, "---") {
+			continue
+		}
 		fields := strings.Fields(l)
-		for _, f := range fields {
-			if strings.Contains(f, "/") {
-				ip := strings.Split(f, "/")[0]
-				if strings.Count(ip, ".") == 3 {
-					return ip
-				}
-			}
+		if len(fields) >= 4 {
+			iface := fields[0]
+			proto := strings.ToLower(fields[2])
+			addrWithMask := fields[3]
+			addr := strings.Split(addrWithMask, "/")[0]
+			entries = append(entries, ipEntry{iface: iface, proto: proto, addr: addr})
 		}
 	}
-	return ""
+
+	findIPv4 := func() string {
+		for _, e := range entries {
+			if e.proto == "ipv4" || strings.Count(e.addr, ".") == 3 {
+				return e.addr
+			}
+		}
+		return ""
+	}
+
+	findIPv6 := func() string {
+		// 1. Prefer global unicast IPv6 first
+		for _, e := range entries {
+			if (e.proto == "ipv6" || netutil.IsIPv6(e.addr)) && !netutil.IsLinkLocal(e.addr) {
+				return e.addr
+			}
+		}
+		// 2. Fallback to link-local with attached interface scope
+		for _, e := range entries {
+			if (e.proto == "ipv6" || netutil.IsIPv6(e.addr)) && netutil.IsLinkLocal(e.addr) {
+				return netutil.AttachScopeIfLinkLocal(e.addr, e.iface)
+			}
+		}
+		return ""
+	}
+
+	switch ipVersion {
+	case "ipv6":
+		return findIPv6()
+	case "auto":
+		if ip := findIPv4(); ip != "" {
+			return ip
+		}
+		return findIPv6()
+	default: // "ipv4"
+		return findIPv4()
+	}
 }
 
 func (p *Provider) scanFromQEMURuntime() []appconfig.Target {

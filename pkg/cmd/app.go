@@ -39,19 +39,20 @@ import (
 )
 
 const (
-	CLIConfigFile       = "config-file"
-	CLIAddress          = "address"
-	CLICollectInterval  = "collect-interval"
-	CLIFieldsFile       = "collectors"
-	CLIWebConfigFile    = "web-config-file"
-	CLIWebReadTimeout   = "web-read-timeout"
-	CLIWebWriteTimeout  = "web-write-timeout"
-	CLILogFormat        = "log-format"
-	CLIDebugMode        = "debug"
-	CLIDcgmExporterBin  = "dcgm-exporter-bin"
-	CLIPortRangeStart   = "port-range-start"
-	CLIPortRangeEnd     = "port-range-end"
-	CLIShutdownTimeout  = "shutdown-timeout"
+	CLIConfigFile         = "config-file"
+	CLIAddress            = "address"
+	CLICollectInterval    = "collect-interval"
+	CLIFieldsFile         = "collectors"
+	CLIWebConfigFile      = "web-config-file"
+	CLIWebReadTimeout     = "web-read-timeout"
+	CLIWebWriteTimeout    = "web-write-timeout"
+	CLILogFormat          = "log-format"
+	CLIDebugMode          = "debug"
+	CLIDcgmExporterBin    = "dcgm-exporter-bin"
+	CLIExporterListenHost = "exporter-listen-host"
+	CLIPortRangeStart     = "port-range-start"
+	CLIPortRangeEnd       = "port-range-end"
+	CLIShutdownTimeout    = "shutdown-timeout"
 )
 
 // NewApp creates the CLI application for dcgm-exporter-supervisor.
@@ -72,7 +73,7 @@ func NewApp(buildVersion string) *cli.App {
 			Name:    CLIAddress,
 			Aliases: []string{"a"},
 			Value:   appconfig.DefaultAddress,
-			Usage:   "Listen address for supervisor HTTP server.",
+			Usage:   "Listen address for supervisor HTTP server as <HOST>:<PORT>. For IPv6, use \"[<IPv6_ADDR>]:<PORT>\" (e.g., \"[::]:9400\").",
 			EnvVars: []string{"DCGM_SUPERVISOR_LISTEN", "DCGM_EXPORTER_LISTEN"},
 		},
 		&cli.IntFlag{
@@ -124,6 +125,12 @@ func NewApp(buildVersion string) *cli.App {
 			Value:   appconfig.DefaultExporterBinary,
 			Usage:   "Path or executable name of dcgm-exporter binary.",
 			EnvVars: []string{"DCGM_EXPORTER_BINARY"},
+		},
+		&cli.StringFlag{
+			Name:    CLIExporterListenHost,
+			Value:   appconfig.DefaultExporterListenHost,
+			Usage:   "Listen host for internal loopback child instances (e.g. \"127.0.0.1\" or \"::1\").",
+			EnvVars: []string{"DCGM_SUPERVISOR_EXPORTER_LISTEN_HOST"},
 		},
 		&cli.IntFlag{
 			Name:    CLIPortRangeStart,
@@ -207,6 +214,9 @@ func runSupervisor(c *cli.Context) error {
 	}
 	if c.IsSet(CLIDcgmExporterBin) {
 		cfg.Exporter.BinaryPath = c.String(CLIDcgmExporterBin)
+	}
+	if c.IsSet(CLIExporterListenHost) {
+		cfg.Exporter.ListenHost = c.String(CLIExporterListenHost)
 	}
 	if c.IsSet(CLIPortRangeStart) {
 		cfg.Exporter.PortRangeStart = c.Int(CLIPortRangeStart)
@@ -318,4 +328,3 @@ func runSupervisor(c *cli.Context) error {
 		}
 	}
 }
-
